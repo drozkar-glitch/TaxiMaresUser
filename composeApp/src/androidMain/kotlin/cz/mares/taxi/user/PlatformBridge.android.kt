@@ -7,6 +7,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.graphics.BitmapFactory
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
@@ -16,12 +17,33 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.webkit.CookieManager
-import android.webkit.JavascriptInterface
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.IconButton
+import androidx.compose.material.Text
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import java.io.BufferedReader
 import java.io.InputStreamReader
@@ -33,6 +55,8 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import kotlin.math.*
 
 actual object PlatformBridge {
     private var appContext: Context? = null
@@ -40,7 +64,9 @@ actual object PlatformBridge {
     private var pendingNotifUrl: String? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     private val ioExecutor = Executors.newCachedThreadPool()
-    private const val CHANNEL_ID = "taxi_mares_notifications"
+    private val bgPoller = Executors.newSingleThreadScheduledExecutor()
+    private var pollerStarted = false
+    private const val CHANNEL_ID = "taxi_mares_high_channel"
 
     fun init(activity: MainActivity) {
         appContext = activity.applicationContext
@@ -49,6 +75,7 @@ actual object PlatformBridge {
             CookieManager.getInstance().setAcceptCookie(true)
         } catch (_: Exception) {}
         ensureNotificationChannel()
+        startBackgroundInboxPoller()
     }
 
     fun detachActivity(activity: MainActivity) {
@@ -67,18 +94,42 @@ actual object PlatformBridge {
         return u
     }
 
+    actual fun areAllPermissionsGranted(): Boolean {
+        val act = activityRef?.get() ?: return false
+        return act.hasAllNeededPermissions()
+    }
+
+    actual fun requestAllPermissions(callback: (Boolean) -> Unit) {
+        val act = activityRef?.get()
+        if (act == null) {
+            callback(false)
+            return
+        }
+        act.requestPermissionsInternal { granted ->
+            if (granted) {
+                showSystemNotification(
+                    id = "perm_ok",
+                    title = "🚕 Taxi Mareš",
+                    body = "Upozornění na příjezd vozu a schválení jízdy jsou aktivní.",
+                    actionUrl = "?open=home"
+                )
+            }
+            callback(granted)
+        }
+    }
+
     private fun ensureNotificationChannel() {
         val ctx = appContext ?: return
         if (Build.VERSION.SDK_INT >= 26) {
             val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "Taxi Mareš – Objednávky a příjezd vozu",
+                "Taxi Mareš – Objednávky a jízdy",
                 NotificationManager.IMPORTANCE_HIGH
             ).apply {
-                description = "Upozornění na schválení jízdy, zprávy z dispečinku a příjezd vozu"
+                description = "Okamžitá upozornění na schválení jízdy a příjezd vozu"
                 enableVibration(true)
-                vibrationPattern = longArrayOf(0L, 300L, 120L, 300L)
+                vibrationPattern = longArrayOf(0L, 350L, 150L, 350L)
             }
             nm.createNotificationChannel(channel)
         }
@@ -108,7 +159,8 @@ actual object PlatformBridge {
                 Notification.Builder(ctx)
             }
 
-            builder.setSmallIcon(ctx.applicationInfo.icon)
+            // DŮLEŽITÉ: R.drawable.ic_launcher je čistý vektor (nikoliv adaptive-icon), takže ho Android 8+ v liště vždy zobrazí
+            builder.setSmallIcon(R.drawable.ic_launcher)
                 .setContentTitle(title)
                 .setContentText(body)
                 .setStyle(Notification.BigTextStyle().bigText(body))
@@ -124,6 +176,47 @@ actual object PlatformBridge {
 
             nm.notify(notifId, builder.build())
         } catch (_: Exception) {}
+    }
+
+    private fun startBackgroundInboxPoller() {
+        if (pollerStarted) return
+        pollerStarted = true
+        bgPoller.scheduleWithFixedDelay({
+            try {
+                val tk = loadPref("taxi_api_token")
+                if (tk.isNotBlank()) {
+                    TaxiApi.fetchInboxMessages { res ->
+                        res.onSuccess { msgList ->
+                            val unread = msgList.filter { !it.isRead }
+                            val seenRaw = loadPref("seen_push_ids", "")
+                            val isFirstRun = seenRaw.isEmpty()
+                            val seenSet = seenRaw.split(",").filter { it.isNotBlank() }.toMutableSet()
+                            var changed = false
+
+                            for (m in unread) {
+                                if (m.msgId.isNotBlank() && !seenSet.contains(m.msgId)) {
+                                    seenSet.add(m.msgId)
+                                    changed = true
+                                    // Při prvním načtení upozorníme na nejnovější nepřečtenou zprávu, poté na každou novou
+                                    if (!isFirstRun || m == unread.firstOrNull()) {
+                                        showSystemNotification(
+                                            id = m.msgId,
+                                            title = m.title.ifBlank { "Taxi Mareš" },
+                                            body = m.body,
+                                            actionUrl = m.actionUrl.ifBlank { "?open=inbox" }
+                                        )
+                                    }
+                                }
+                            }
+                            if (changed || isFirstRun) {
+                                val saved = if (seenSet.isEmpty()) "init" else seenSet.toList().takeLast(80).joinToString(",")
+                                savePref("seen_push_ids", saved)
+                            }
+                        }
+                    }
+                }
+            } catch (_: Exception) {}
+        }, 3L, 6L, TimeUnit.SECONDS)
     }
 
     actual fun httpRequest(
@@ -214,12 +307,12 @@ actual object PlatformBridge {
     @SuppressLint("MissingPermission")
     actual fun requestLocation(callback: (Double?, Double?) -> Unit) {
         val act = activityRef?.get()
-        if (act != null) {
-            act.ensureLocationPermission { granted ->
-                if (!granted) {
-                    callback(null, null)
-                } else {
+        if (act != null && !act.hasLocationPermission()) {
+            act.requestPermissionsInternal { _ ->
+                if (act.hasLocationPermission()) {
                     fetchLocationInternal(callback)
+                } else {
+                    callback(null, null)
                 }
             }
         } else {
@@ -314,20 +407,69 @@ actual object PlatformBridge {
     }
 }
 
-private class AndroidLeafletBridge(
-    private val onCenterChanged: (Double, Double) -> Unit
-) {
-    private val handler = Handler(Looper.getMainLooper())
+private val tileBitmapsCache = mutableStateMapOf<String, ImageBitmap>()
+private val tileLoadingSet = HashSet<String>()
+private val tileExecutor = Executors.newFixedThreadPool(4)
+private val tileMainHandler = Handler(Looper.getMainLooper())
 
-    @JavascriptInterface
-    fun onMapMoved(lat: Double, lon: Double) {
-        handler.post {
-            onCenterChanged(lat, lon)
+private fun loadMapTileAsync(isDark: Boolean, z: Int, x: Int, y: Int) {
+    val maxTile = (1 shl z) - 1
+    if (x < 0 || x > maxTile || y < 0 || y > maxTile) return
+    val modePrefix = if (isDark) "dark" else "light"
+    val key = "$modePrefix/$z/$x/$y"
+    if (tileBitmapsCache.containsKey(key) || synchronized(tileLoadingSet) { !tileLoadingSet.add(key) }) return
+
+    tileExecutor.execute {
+        var conn: HttpURLConnection? = null
+        try {
+            val urlStr = if (isDark) {
+                "https://a.basemaps.cartocdn.com/dark_all/$z/$x/$y@2x.png"
+            } else {
+                "${TaxiApi.BASE_URL}/taxi/admin/modules/pricing/assets/tiles.php?mode=tiles&set=basic&tileSize=256&z=$z&x=$x&y=$y&lang=cs"
+            }
+            val u = URL(urlStr)
+            conn = (u.openConnection() as HttpURLConnection).apply {
+                connectTimeout = 7000
+                readTimeout = 7000
+                setRequestProperty("User-Agent", "TaxiMaresApp/2.0")
+                setRequestProperty("Referer", "${TaxiApi.BASE_URL}/")
+            }
+            if (conn.responseCode in 200..299) {
+                val bytes = conn.inputStream.use { it.readBytes() }
+                val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                if (bmp != null) {
+                    val img = bmp.asImageBitmap()
+                    tileMainHandler.post {
+                        tileBitmapsCache[key] = img
+                    }
+                }
+            }
+        } catch (_: Exception) {
+        } finally {
+            conn?.disconnect()
+            synchronized(tileLoadingSet) { tileLoadingSet.remove(key) }
         }
     }
 }
 
-@SuppressLint("SetJavaScriptEnabled")
+private fun lonToTileX(lon: Double, z: Int): Double {
+    return (lon + 180.0) / 360.0 * (1 shl z).toDouble()
+}
+
+private fun latToTileY(lat: Double, z: Int): Double {
+    val rad = lat.coerceIn(-85.05, 85.05) * PI / 180.0
+    return (1.0 - ln(tan(rad) + 1.0 / cos(rad)) / PI) / 2.0 * (1 shl z).toDouble()
+}
+
+private fun tileXToLon(tileX: Double, z: Int): Double {
+    return tileX / (1 shl z).toDouble() * 360.0 - 180.0
+}
+
+private fun tileYToLat(tileY: Double, z: Int): Double {
+    val n = PI - 2.0 * PI * tileY / (1 shl z).toDouble()
+    return 180.0 / PI * atan(0.5 * (exp(n) - exp(-n)))
+}
+
 @Composable
 actual fun InteractiveTaxiMap(
     isDark: Boolean,
@@ -340,179 +482,181 @@ actual fun InteractiveTaxiMap(
     onMapCenterChanged: (Double, Double) -> Unit,
     modifier: Modifier
 ) {
-    var webViewRef by remember { mutableStateOf<WebView?>(null) }
-    var isMapReady by remember { mutableStateOf(false) }
+    var zoom by remember { mutableStateOf(14) }
+    var centerLat by remember { mutableStateOf(50.4222208) }
+    var centerLon by remember { mutableStateOf(14.2540608) }
 
-    val statePayloadJson = remember(isDark, routePoints, startPoint, destPoint, trackingData, flyToTarget) {
-        val ptsJson = routePoints.joinToString(",", "[", "]") { "[${it.first},${it.second}]" }
-        val startJson = if (startPoint != null) "[${startPoint.lat},${startPoint.lon}]" else "null"
-        val destJson = if (destPoint != null) "[${destPoint.lat},${destPoint.lon}]" else "null"
-        val flyJson = if (flyToTarget != null) "[${flyToTarget.first},${flyToTarget.second}]" else "null"
-        val trackJson = if (trackingData != null && trackingData.ok && trackingData.lat != 0.0) {
-            """{"lat":${trackingData.lat},"lon":${trackingData.lon},"tLat":${trackingData.targetLat},"tLon":${trackingData.targetLon},"color":"${trackingData.carColor}","type":"${trackingData.carType}"}"""
-        } else "null"
-        """{"isDark":$isDark,"route":$ptsJson,"start":$startJson,"dest":$destJson,"fly":$flyJson,"track":$trackJson}"""
-    }
-
-    LaunchedEffect(statePayloadJson, isMapReady) {
-        if (isMapReady) {
-            webViewRef?.evaluateJavascript("if(window.syncTaxiMap){window.syncTaxiMap($statePayloadJson);}", null)
+    LaunchedEffect(flyToTarget) {
+        if (flyToTarget != null) {
+            centerLat = flyToTarget.first
+            centerLon = flyToTarget.second
+            onMapCenterChanged(centerLat, centerLon)
         }
     }
 
-    AndroidView(
-        modifier = modifier,
-        factory = { ctx ->
-            WebView(ctx).apply {
-                settings.javaScriptEnabled = true
-                settings.domStorageEnabled = true
-                setBackgroundColor(android.graphics.Color.parseColor("#0A0A0D"))
-                addJavascriptInterface(AndroidLeafletBridge(onMapCenterChanged), "AndroidBridge")
-                webViewClient = object : WebViewClient() {
-                    override fun onPageFinished(view: WebView?, url: String?) {
-                        super.onPageFinished(view, url)
-                        isMapReady = true
-                        view?.evaluateJavascript("if(window.syncTaxiMap){window.syncTaxiMap($statePayloadJson);}", null)
-                    }
-                }
-
-                val html = """
-                    <!DOCTYPE html>
-                    <html data-theme="${if (isDark) "dark" else "light"}">
-                    <head>
-                        <meta charset="utf-8" />
-                        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-                        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-                        <style>
-                            * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-                            html, body, #map { margin: 0; padding: 0; width: 100%; height: 100%; background: #0a0a0d; overflow: hidden; }
-                            html[data-theme="dark"] .leaflet-tile-container { filter: brightness(85%) contrast(105%); }
-                            svg path.leaflet-interactive {
-                                stroke: #ffcc00 !important;
-                                stroke-width: 5px !important;
-                                stroke-opacity: 1 !important;
-                                stroke-linecap: round !important;
-                                stroke-linejoin: round !important;
-                                filter: drop-shadow(1px 1px 2px rgba(0,0,0,0.85)) drop-shadow(-1px -1px 2px rgba(0,0,0,0.85)) !important;
-                            }
-                        </style>
-                    </head>
-                    <body>
-                        <div id="map"></div>
-                        <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-                        <script>
-                            var map = L.map('map', { zoomControl: false, attributionControl: false, zoomSnap: 0 }).setView([50.4222208, 14.2540608], 14);
-                            var currentDark = null;
-                            var tileLayer = null;
-                            var routeLayer = null;
-                            var carMarker = null;
-                            var targetMarker = null;
-                            var lastFlyKey = "";
-                            var lastRouteKey = "";
-
-                            var taxiIcon = L.icon({
-                                iconUrl: 'https://606420002.com/taxi/app/assets/images/taxi-point.png',
-                                iconSize: [34, 34],
-                                iconAnchor: [17, 34]
-                            });
-
-                            function updateThemeTiles(isDark) {
-                                if (currentDark === isDark && tileLayer) return;
-                                currentDark = isDark;
-                                document.documentElement.setAttribute('data-theme', isDark ? 'dark' : 'light');
-                                if (tileLayer) map.removeLayer(tileLayer);
-                                var url = isDark
-                                    ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png'
-                                    : 'https://606420002.com/taxi/admin/modules/pricing/assets/tiles.php?mode=tiles&set=basic&tileSize=256&z={z}&x={x}&y={y}&lang=cs';
-                                tileLayer = L.tileLayer(url, { maxZoom: 19 }).addTo(map);
-                            }
-
-                            map.on('moveend', function() {
-                                var c = map.getCenter();
-                                if (window.AndroidBridge && window.AndroidBridge.onMapMoved) {
-                                    window.AndroidBridge.onMapMoved(c.lat, c.lng);
-                                }
-                            });
-
-                            function buildCarSvg(carColor) {
-                                return '<svg viewBox="0 0 40 80" width="22" height="44" style="overflow:visible;"><rect x="2" y="2" width="36" height="76" rx="8" fill="rgba(0,0,0,0.35)"/><rect x="4" y="4" width="32" height="72" rx="8" fill="' + carColor + '" stroke="#111" stroke-width="1.5"/><path d="M 6 24 L 34 24 L 32 32 L 8 32 Z" fill="#1a1a1a"/><rect x="8" y="32" width="24" height="26" rx="2" fill="' + carColor + '" stroke="#222" stroke-width="0.6"/><rect x="14" y="38" width="12" height="4" rx="1" fill="#ffcc00" stroke="#111" stroke-width="0.5"/></svg>';
-                            }
-
-                            window.syncTaxiMap = function(state) {
-                                if (!state) return;
-                                updateThemeTiles(!!state.isDark);
-
-                                if (state.fly && state.fly.length === 2) {
-                                    var fk = state.fly[0] + ',' + state.fly[1];
-                                    if (fk !== lastFlyKey) {
-                                        lastFlyKey = fk;
-                                        map.setView(state.fly, 16, { animate: true });
-                                    }
-                                }
-
-                                var rk = JSON.stringify({ r: state.route, s: state.start, d: state.dest });
-                                if (rk !== lastRouteKey) {
-                                    lastRouteKey = rk;
-                                    if (routeLayer) {
-                                        map.removeLayer(routeLayer);
-                                        routeLayer = null;
-                                    }
-                                    var items = [];
-                                    var poly = null;
-                                    if (state.route && state.route.length >= 2) {
-                                        poly = L.polyline(state.route);
-                                        items.push(poly);
-                                    }
-                                    if (state.start && state.start.length === 2) {
-                                        items.push(L.marker(state.start, { icon: taxiIcon }));
-                                    }
-                                    if (state.dest && state.dest.length === 2) {
-                                        items.push(L.marker(state.dest, { icon: taxiIcon }));
-                                    }
-                                    if (items.length > 0) {
-                                        routeLayer = L.layerGroup(items).addTo(map);
-                                        if (poly) {
-                                            map.fitBounds(poly.getBounds(), { paddingBottomRight: [20, 260], paddingTopLeft: [20, 60], maxZoom: 15 });
-                                        }
-                                    }
-                                }
-
-                                if (state.track && state.track.lat) {
-                                    var pos = [state.track.lat, state.track.lon];
-                                    if (!carMarker) {
-                                        var cIcon = L.divIcon({
-                                            className: 'live-car',
-                                            html: buildCarSvg(state.track.color || '#ffcc00'),
-                                            iconSize: [22, 44],
-                                            iconAnchor: [11, 22]
-                                        });
-                                        carMarker = L.marker(pos, { icon: cIcon }).addTo(map);
-                                    } else {
-                                        carMarker.setLatLng(pos);
-                                    }
-                                    if (state.track.tLat && state.track.tLon) {
-                                        var tPos = [state.track.tLat, state.track.tLon];
-                                        if (!targetMarker) {
-                                            targetMarker = L.marker(tPos, { icon: taxiIcon }).addTo(map);
-                                        } else {
-                                            targetMarker.setLatLng(tPos);
-                                        }
-                                    }
-                                } else {
-                                    if (carMarker) { map.removeLayer(carMarker); carMarker = null; }
-                                    if (targetMarker) { map.removeLayer(targetMarker); targetMarker = null; }
-                                }
-                            };
-                        </script>
-                    </body>
-                    </html>
-                """.trimIndent()
-
-                loadDataWithBaseURL(TaxiApi.BASE_URL, html, "text/html", "UTF-8", null)
-                webViewRef = this
+    // Automatické vycentrování na celou trasu po výpočtu
+    LaunchedEffect(routePoints) {
+        if (routePoints.size >= 2) {
+            val minLat = routePoints.minOf { it.first }
+            val maxLat = routePoints.maxOf { it.first }
+            val minLon = routePoints.minOf { it.second }
+            val maxLon = routePoints.maxOf { it.second }
+            centerLat = (minLat + maxLat) / 2.0 - (maxLat - minLat) * 0.18
+            centerLon = (minLon + maxLon) / 2.0
+            val span = max(maxLat - minLat, maxLon - minLon)
+            zoom = when {
+                span > 1.2 -> 8
+                span > 0.6 -> 9
+                span > 0.3 -> 10
+                span > 0.15 -> 11
+                span > 0.07 -> 12
+                span > 0.03 -> 13
+                else -> 14
             }
         }
-    )
+    }
+
+    LaunchedEffect(trackingData?.lat, trackingData?.lon) {
+        if (trackingData != null && trackingData.ok && trackingData.lat != 0.0 && trackingData.lon != 0.0) {
+            centerLat = trackingData.lat
+            centerLon = trackingData.lon
+        }
+    }
+
+    val modePrefix = if (isDark) "dark" else "light"
+
+    Box(modifier = modifier.background(if (isDark) Color(0xFF121418) else Color(0xFFE5E3DF))) {
+        Canvas(
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(zoom) {
+                    val tilePx = 256.dp.toPx()
+                    detectTransformGestures { _, pan, gestureZoom, _ ->
+                        val cTileX = lonToTileX(centerLon, zoom) - (pan.x / tilePx)
+                        val cTileY = latToTileY(centerLat, zoom) - (pan.y / tilePx)
+                        centerLon = tileXToLon(cTileX, zoom).coerceIn(-179.0, 179.0)
+                        centerLat = tileYToLat(cTileY, zoom).coerceIn(-85.0, 85.0)
+                        if (gestureZoom > 1.18f && zoom < 18) zoom++
+                        else if (gestureZoom < 0.82f && zoom > 6) zoom--
+                        onMapCenterChanged(centerLat, centerLon)
+                    }
+                }
+        ) {
+            val w = size.width
+            val h = size.height
+            // DŮLEŽITÉ: Přepočet 256.dp na fyzické pixely displeje, aby mapa byla ostrá a čitelná
+            val tilePx = 256.dp.toPx()
+            val tilePxInt = tilePx.roundToInt()
+
+            val cTileX = lonToTileX(centerLon, zoom)
+            val cTileY = latToTileY(centerLat, zoom)
+
+            val halfCols = ceil(w / (2.0 * tilePx)).toInt() + 1
+            val halfRows = ceil(h / (2.0 * tilePx)).toInt() + 1
+
+            val minTileX = floor(cTileX).toInt() - halfCols
+            val maxTileX = floor(cTileX).toInt() + halfCols
+            val minTileY = floor(cTileY).toInt() - halfRows
+            val maxTileY = floor(cTileY).toInt() + halfRows
+
+            for (tx in minTileX..maxTileX) {
+                for (ty in minTileY..maxTileY) {
+                    val screenX = (w / 2.0 + (tx - cTileX) * tilePx).roundToInt()
+                    val screenY = (h / 2.0 + (ty - cTileY) * tilePx).roundToInt()
+                    val bmp = tileBitmapsCache["$modePrefix/$zoom/$tx/$ty"]
+                    if (bmp != null) {
+                        drawImage(
+                            image = bmp,
+                            dstOffset = IntOffset(screenX, screenY),
+                            dstSize = IntSize(tilePxInt + 1, tilePxInt + 1)
+                        )
+                    } else {
+                        loadMapTileAsync(isDark, zoom, tx, ty)
+                    }
+                }
+            }
+
+            fun toScreen(lat: Double, lon: Double): Offset {
+                val px = (w / 2.0 + (lonToTileX(lon, zoom) - cTileX) * tilePx).toFloat()
+                val py = (h / 2.0 + (latToTileY(lat, zoom) - cTileY) * tilePx).toFloat()
+                return Offset(px, py)
+            }
+
+            // Vykreslení trasy (#FFCC00 s černým stínem jako ve style.css)
+            if (routePoints.size >= 2) {
+                val path = Path()
+                val first = toScreen(routePoints[0].first, routePoints[0].second)
+                path.moveTo(first.x, first.y)
+                for (i in 1 until routePoints.size) {
+                    val pt = toScreen(routePoints[i].first, routePoints[i].second)
+                    path.lineTo(pt.x, pt.y)
+                }
+                drawPath(
+                    path = path,
+                    color = Color.Black.copy(alpha = 0.85f),
+                    style = Stroke(width = 7.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
+                )
+                drawPath(
+                    path = path,
+                    color = Color(0xFFFFCC00),
+                    style = Stroke(width = 4.5.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
+                )
+            }
+
+            // Špendlík Start
+            startPoint?.let { sp ->
+                val pos = toScreen(sp.lat, sp.lon)
+                drawCircle(color = Color.Black, radius = 11.dp.toPx(), center = pos)
+                drawCircle(color = Color(0xFF2ECC71), radius = 8.5.dp.toPx(), center = pos)
+                drawCircle(color = Color.White, radius = 3.5.dp.toPx(), center = pos)
+            }
+
+            // Špendlík Cíl
+            destPoint?.let { dp ->
+                val pos = toScreen(dp.lat, dp.lon)
+                drawCircle(color = Color.Black, radius = 11.dp.toPx(), center = pos)
+                drawCircle(color = Color(0xFFFFCC00), radius = 8.5.dp.toPx(), center = pos)
+                drawCircle(color = Color.Black, radius = 3.5.dp.toPx(), center = pos)
+            }
+
+            // Živý vůz při sledování
+            trackingData?.takeIf { it.ok && it.lat != 0.0 && it.lon != 0.0 }?.let { td ->
+                if (td.targetLat != 0.0 && td.targetLon != 0.0) {
+                    val tPos = toScreen(td.targetLat, td.targetLon)
+                    drawCircle(color = Color.Black, radius = 10.dp.toPx(), center = tPos)
+                    drawCircle(color = Color(0xFFFFCC00), radius = 7.dp.toPx(), center = tPos)
+                }
+                val carPos = toScreen(td.lat, td.lon)
+                drawCircle(color = Color.Black.copy(alpha = 0.65f), radius = 14.dp.toPx(), center = carPos)
+                drawCircle(color = Color(0xFFFFCC00), radius = 11.dp.toPx(), center = carPos)
+                drawCircle(color = Color(0xFF141418), radius = 5.5.dp.toPx(), center = carPos)
+            }
+        }
+
+        Column(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(top = 64.dp, end = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            IconButton(
+                onClick = { if (zoom < 18) zoom++ },
+                modifier = Modifier
+                    .size(42.dp)
+                    .background(Color(0xD9141418), CircleShape)
+            ) {
+                Text("＋", color = Color(0xFFFFCC00), fontWeight = FontWeight.Black, fontSize = 18.sp)
+            }
+            IconButton(
+                onClick = { if (zoom > 6) zoom-- },
+                modifier = Modifier
+                    .size(42.dp)
+                    .background(Color(0xD9141418), CircleShape)
+            ) {
+                Text("－", color = Color(0xFFFFCC00), fontWeight = FontWeight.Black, fontSize = 18.sp)
+            }
+        }
+    }
 }
 
 @SuppressLint("SetJavaScriptEnabled")

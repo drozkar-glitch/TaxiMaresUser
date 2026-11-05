@@ -33,12 +33,12 @@ fun App() {
     val isDark = themePref != "light"
 
     // WATER GLASS BAREVNÁ PALETA PŘESNĚ PODLE STYLE.CSS
-    val bgColor = if (isDark) Color(0xFF000000) else Color(0xFFFFFFFF)
-    val sheetBg = if (isDark) Color(0xCC0F0F12) else Color(0xD9FFFFFF)
-    val cardBg = if (isDark) Color(0x14FFFFFF) else Color(0x0D000000)
+    val bgColor = if (isDark) Color(0xFF0A0A0D) else Color(0xFFF5F6F8)
+    val sheetBg = if (isDark) Color(0xD90F0F12) else Color(0xE6FFFFFF)
+    val cardBg = if (isDark) Color(0x18FFFFFF) else Color(0x0D000000)
     val solidCardBg = if (isDark) Color(0xFF141418) else Color(0xFFFFFFFF)
     val textColor = if (isDark) Color(0xFFFFFFFF) else Color(0xFF000000)
-    val borderColor = if (isDark) Color(0x26FFFFFF) else Color(0x26000000)
+    val borderColor = if (isDark) Color(0x2EFFFFFF) else Color(0x26000000)
     val brandColor = if (isDark) Color(0xFFFFCC00) else Color(0xFF2ECC71)
     val brandTextColor = if (isDark) Color(0xFF000000) else Color(0xFFFFFFFF)
 
@@ -47,6 +47,7 @@ fun App() {
     var activeView by remember { mutableStateOf("home") }
     var sheetStop by remember { mutableStateOf(SheetStop.MID) }
     var barTitle by remember { mutableStateOf("Kam to bude?") }
+    var permissionsGranted by remember { mutableStateOf(PlatformBridge.areAllPermissionsGranted()) }
 
     var routeType by remember { mutableStateOf("car_fast_traffic") }
     var startPoint by remember { mutableStateOf<GeoPoint?>(null) }
@@ -99,15 +100,21 @@ fun App() {
             barTitle = "Potvrzení platby"
             sheetStop = SheetStop.MAX
         } else if (!openMatch.isNullOrBlank()) {
-            activeView = openMatch
-            barTitle = when (openMatch) {
-                "orders" -> "🚕 Moje objednávky"
-                "requests" -> "⏳ Moje poptávky"
-                "invoices" -> "Moje doklady"
-                "inbox" -> "Doručená pošta"
-                else -> "Taxi Mareš"
+            if (openMatch == "home") {
+                activeView = "home"
+                sheetStop = SheetStop.MID
+                barTitle = CzechVocativeHelper.greetingFor(userProfile.name)
+            } else {
+                activeView = openMatch
+                barTitle = when (openMatch) {
+                    "orders" -> "🚕 Moje objednávky"
+                    "requests" -> "⏳ Moje poptávky"
+                    "invoices" -> "Moje doklady"
+                    "inbox" -> "Doručená pošta"
+                    else -> "Taxi Mareš"
+                }
+                sheetStop = SheetStop.MAX
             }
-            sheetStop = SheetStop.MAX
         } else {
             activeView = "inbox"
             barTitle = "Doručená pošta"
@@ -115,7 +122,7 @@ fun App() {
         }
     }
 
-    // AKTIVNÍ RADAR NA NOTIFIKACE A PROKLIKY Z HORNÍ LIŠTY TELEFONU
+    // Pravidelná kontrola stavu oprávnění, prokliků z notifikací a počtu nepřečtených zpráv
     LaunchedEffect(token) {
         if (token.isNotBlank()) {
             TaxiApi.fetchUserProfile { prof ->
@@ -126,46 +133,16 @@ fun App() {
                     }
                 }
             }
-
-            var isFirstPoll = true
-            while (token.isNotBlank()) {
-                PlatformBridge.consumePendingNotificationUrl()?.let { clickedUrl ->
-                    handleDeepLinkAction(clickedUrl)
-                }
-
-                TaxiApi.fetchInboxMessages { res ->
-                    res.onSuccess { msgList ->
-                        val unreadList = msgList.filter { !it.isRead }
-                        unreadCount = unreadList.size
-
-                        val seenRaw = PlatformBridge.loadPref("seen_push_ids", "")
-                        val seenSet = seenRaw.split(",").filter { it.isNotBlank() }.toMutableSet()
-                        var changed = false
-
-                        for (m in unreadList) {
-                            if (m.msgId.isNotBlank() && !seenSet.contains(m.msgId)) {
-                                seenSet.add(m.msgId)
-                                changed = true
-                                if (!isFirstPoll) {
-                                    PlatformBridge.showSystemNotification(
-                                        id = m.msgId,
-                                        title = m.title.ifBlank { "Taxi Mareš" },
-                                        body = m.body,
-                                        actionUrl = m.actionUrl.ifBlank { "?open=inbox" }
-                                    )
-                                }
-                            }
-                        }
-
-                        if (changed) {
-                            val trimmed = seenSet.toList().takeLast(80).joinToString(",")
-                            PlatformBridge.savePref("seen_push_ids", trimmed)
-                        }
-                        isFirstPoll = false
-                    }
-                }
-                delay(6000L)
+        }
+        while (true) {
+            permissionsGranted = PlatformBridge.areAllPermissionsGranted()
+            PlatformBridge.consumePendingNotificationUrl()?.let { clickedUrl ->
+                handleDeepLinkAction(clickedUrl)
             }
+            if (token.isNotBlank()) {
+                TaxiApi.fetchUnreadCount { unreadCount = it }
+            }
+            delay(3000L)
         }
     }
 
@@ -272,6 +249,7 @@ fun App() {
                     }
                 )
             } else {
+                // 1. INTERAKTIVNÍ MAPA NA POZADÍ
                 InteractiveTaxiMap(
                     isDark = isDark,
                     routePoints = trackingData?.routePoints?.takeIf { it.isNotEmpty() }
@@ -288,6 +266,44 @@ fun App() {
                     modifier = Modifier.fillMaxSize()
                 )
 
+                // 2. HORNÍ LIŠTA PRO POVOLENÍ NOTIFIKACÍ A POLOHY (dokud nejsou povolené)
+                if (!permissionsGranted) {
+                    Row(
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 8.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(Color(0xE6141418))
+                            .border(1.dp, brandColor, RoundedCornerShape(14.dp))
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            "🔔 Povolte upozornění na jízdu a GPS polohu",
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 12.sp,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Button(
+                            onClick = {
+                                PlatformBridge.requestAllPermissions { granted ->
+                                    permissionsGranted = granted
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(backgroundColor = brandColor),
+                            shape = RoundedCornerShape(8.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                        ) {
+                            Text("Povolit", color = Color.Black, fontWeight = FontWeight.ExtraBold, fontSize = 12.sp)
+                        }
+                    }
+                }
+
+                // 3. UBER-STYLE PLOVOUCÍ ŠPENDLÍK PŘI VÝBĚRU Z MAPY
                 if (mapPickTargetField != null) {
                     Box(modifier = Modifier.fillMaxSize()) {
                         Column(
@@ -371,7 +387,7 @@ fun App() {
                     }
                 }
 
-                // SMART GLASS SHEET (POLOPRŮHLEDNÝ SKLENĚNÝ PANEL NAD MAPOU)
+                // 4. SMART GLASS SHEET (POLOPRŮHLEDNÝ SKLENĚNÝ PANEL NAD MAPOU)
                 if (mapPickTargetField == null) {
                     val targetSheetHeight = when {
                         activeTrackingToken != null && activeView == "home" -> 86.dp
@@ -396,7 +412,6 @@ fun App() {
                             .border(1.dp, borderColor, RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp))
                     ) {
                         Column(modifier = Modifier.fillMaxSize()) {
-                            // HORNÍ LIŠTA GLASS SHEETU
                             Box(
                                 modifier = Modifier
                                     .fillMaxWidth()

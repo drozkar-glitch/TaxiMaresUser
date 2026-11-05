@@ -37,6 +37,7 @@ import kotlin.math.*
 actual object PlatformBridge {
     private val taxiLocationMgr = CLLocationManager()
     private var pendingUrl: String? = null
+    private var iosPermsAsked = false
 
     actual fun httpRequest(
         url: String,
@@ -106,7 +107,17 @@ actual object PlatformBridge {
         return fmt.stringFromDate(targetDate)
     }
 
+    actual fun areAllPermissionsGranted(): Boolean = iosPermsAsked
+
+    actual fun requestAllPermissions(callback: (Boolean) -> Unit) {
+        iosPermsAsked = true
+        taxiLocationMgr.requestWhenInUseAuthorization()
+        taxiLocationMgr.startUpdatingLocation()
+        callback(true)
+    }
+
     actual fun requestLocation(callback: (Double?, Double?) -> Unit) {
+        iosPermsAsked = true
         taxiLocationMgr.requestWhenInUseAuthorization()
         taxiLocationMgr.startUpdatingLocation()
         val loc = taxiLocationMgr.location
@@ -198,9 +209,10 @@ actual fun InteractiveTaxiMap(
             modifier = Modifier
                 .fillMaxSize()
                 .pointerInput(zoom) {
+                    val tilePx = 256.dp.toPx()
                     detectTransformGestures { _, pan, gestureZoom, _ ->
-                        val cx = iosLonToX(centerLon, zoom) - (pan.x / 256.0)
-                        val cy = iosLatToY(centerLat, zoom) - (pan.y / 256.0)
+                        val cx = iosLonToX(centerLon, zoom) - (pan.x / tilePx)
+                        val cy = iosLatToY(centerLat, zoom) - (pan.y / tilePx)
                         centerLon = iosXToLon(cx, zoom).coerceIn(-179.0, 179.0)
                         centerLat = iosYToLat(cy, zoom).coerceIn(-85.0, 85.0)
                         if (gestureZoom > 1.18f && zoom < 18) zoom++
@@ -211,26 +223,27 @@ actual fun InteractiveTaxiMap(
         ) {
             val w = size.width
             val h = size.height
+            val tilePx = 256.dp.toPx()
             val cTileX = iosLonToX(centerLon, zoom)
             val cTileY = iosLatToY(centerLat, zoom)
 
-            val minX = floor(cTileX - (w / 512.0) - 1).toInt()
-            val maxX = ceil(cTileX + (w / 512.0) + 1).toInt()
-            val minY = floor(cTileY - (h / 512.0) - 1).toInt()
-            val maxY = ceil(cTileY + (h / 512.0) + 1).toInt()
+            val minX = floor(cTileX - (w / (2.0 * tilePx)) - 1).toInt()
+            val maxX = ceil(cTileX + (w / (2.0 * tilePx)) + 1).toInt()
+            val minY = floor(cTileY - (h / (2.0 * tilePx)) - 1).toInt()
+            val maxY = ceil(cTileY + (h / (2.0 * tilePx)) + 1).toInt()
 
             for (tx in minX..maxX) {
-                val sx = (w / 2.0 + (tx - cTileX) * 256.0).toFloat()
+                val sx = (w / 2.0 + (tx - cTileX) * tilePx).toFloat()
                 drawLine(gridCol, Offset(sx, 0f), Offset(sx, h), strokeWidth = 1f)
             }
             for (ty in minY..maxY) {
-                val sy = (h / 2.0 + (ty - cTileY) * 256.0).toFloat()
+                val sy = (h / 2.0 + (ty - cTileY) * tilePx).toFloat()
                 drawLine(gridCol, Offset(0f, sy), Offset(w, sy), strokeWidth = 1f)
             }
 
             fun toScreen(lat: Double, lon: Double): Offset {
-                val px = (w / 2.0 + (iosLonToX(lon, zoom) - cTileX) * 256.0).toFloat()
-                val py = (h / 2.0 + (iosLatToY(lat, zoom) - cTileY) * 256.0).toFloat()
+                val px = (w / 2.0 + (iosLonToX(lon, zoom) - cTileX) * tilePx).toFloat()
+                val py = (h / 2.0 + (iosLatToY(lat, zoom) - cTileY) * tilePx).toFloat()
                 return Offset(px, py)
             }
 
@@ -244,53 +257,53 @@ actual fun InteractiveTaxiMap(
                 }
                 drawPath(
                     path = path,
-                    color = Color.Black.copy(alpha = 0.75f),
-                    style = Stroke(width = 14f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+                    color = Color.Black.copy(alpha = 0.85f),
+                    style = Stroke(width = 7.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
                 )
                 drawPath(
                     path = path,
                     color = Color(0xFFFFCC00),
-                    style = Stroke(width = 9f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+                    style = Stroke(width = 4.5.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
                 )
             }
 
             startPoint?.let { sp ->
                 val pos = toScreen(sp.lat, sp.lon)
-                drawCircle(color = Color.Black, radius = 18f, center = pos)
-                drawCircle(color = Color(0xFF2ECC71), radius = 14f, center = pos)
-                drawCircle(color = Color.White, radius = 6f, center = pos)
+                drawCircle(color = Color.Black, radius = 11.dp.toPx(), center = pos)
+                drawCircle(color = Color(0xFF2ECC71), radius = 8.5.dp.toPx(), center = pos)
+                drawCircle(color = Color.White, radius = 3.5.dp.toPx(), center = pos)
             }
 
             destPoint?.let { dp ->
                 val pos = toScreen(dp.lat, dp.lon)
-                drawCircle(color = Color.Black, radius = 18f, center = pos)
-                drawCircle(color = Color(0xFFFFCC00), radius = 14f, center = pos)
-                drawCircle(color = Color.Black, radius = 6f, center = pos)
+                drawCircle(color = Color.Black, radius = 11.dp.toPx(), center = pos)
+                drawCircle(color = Color(0xFFFFCC00), radius = 8.5.dp.toPx(), center = pos)
+                drawCircle(color = Color.Black, radius = 3.5.dp.toPx(), center = pos)
             }
 
             trackingData?.takeIf { it.ok && it.lat != 0.0 && it.lon != 0.0 }?.let { td ->
                 val carPos = toScreen(td.lat, td.lon)
-                drawCircle(color = Color.Black.copy(alpha = 0.6f), radius = 24f, center = carPos)
-                drawCircle(color = Color(0xFFFFCC00), radius = 19f, center = carPos)
-                drawCircle(color = Color(0xFF141418), radius = 10f, center = carPos)
+                drawCircle(color = Color.Black.copy(alpha = 0.65f), radius = 14.dp.toPx(), center = carPos)
+                drawCircle(color = Color(0xFFFFCC00), radius = 11.dp.toPx(), center = carPos)
+                drawCircle(color = Color(0xFF141418), radius = 5.5.dp.toPx(), center = carPos)
             }
         }
 
         Column(
             modifier = Modifier
                 .align(Alignment.TopEnd)
-                .padding(top = 16.dp, end = 16.dp),
+                .padding(top = 64.dp, end = 16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             IconButton(
                 onClick = { if (zoom < 18) zoom++ },
-                modifier = Modifier.size(40.dp).background(Color(0xCC1B1B22), CircleShape)
+                modifier = Modifier.size(42.dp).background(Color(0xD9141418), CircleShape)
             ) {
                 Text("＋", color = Color(0xFFFFCC00), fontWeight = FontWeight.Black, fontSize = 18.sp)
             }
             IconButton(
                 onClick = { if (zoom > 6) zoom-- },
-                modifier = Modifier.size(40.dp).background(Color(0xCC1B1B22), CircleShape)
+                modifier = Modifier.size(42.dp).background(Color(0xD9141418), CircleShape)
             ) {
                 Text("－", color = Color(0xFFFFCC00), fontWeight = FontWeight.Black, fontSize = 18.sp)
             }

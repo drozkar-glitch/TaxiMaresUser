@@ -18,6 +18,8 @@ expect object PlatformBridge {
     fun currentTimeMillis(): Long
     fun currentDateIso(): String
     fun formatDateTimeOffset(minutesFromNow: Int): String
+    fun areAllPermissionsGranted(): Boolean
+    fun requestAllPermissions(callback: (Boolean) -> Unit)
     fun requestLocation(callback: (Double?, Double?) -> Unit)
     fun showSystemNotification(id: String, title: String, body: String, actionUrl: String)
     fun consumePendingNotificationUrl(): String?

@@ -3,8 +3,10 @@ package cz.mares.taxi.user
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -13,16 +15,21 @@ import androidx.core.content.ContextCompat
 
 class MainActivity : ComponentActivity() {
 
-    private var pendingLocationPermissionCallback: ((Boolean) -> Unit)? = null
+    private var pendingPermCallback: ((Boolean) -> Unit)? = null
+    private var lastRequestTime = 0L
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { results ->
-        val fine = results[Manifest.permission.ACCESS_FINE_LOCATION] == true
-        val coarse = results[Manifest.permission.ACCESS_COARSE_LOCATION] == true
-        val cb = pendingLocationPermissionCallback
-        pendingLocationPermissionCallback = null
-        cb?.invoke(fine || coarse)
+    ) { _ ->
+        val allOk = hasAllNeededPermissions()
+        val elapsed = System.currentTimeMillis() - lastRequestTime
+        // Pokud systém dialog okamžitě zamítl (< 250 ms) a oprávnění stále chybí, otevřeme nastavení aplikace
+        if (!allOk && elapsed < 250L) {
+            openAppPermissionSettings()
+        }
+        val cb = pendingPermCallback
+        pendingPermCallback = null
+        cb?.invoke(allOk)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -35,10 +42,11 @@ class MainActivity : ComponentActivity() {
             App()
         }
 
-        // Požádáme o oprávnění pro GPS polohu a Notifikace ihned po vykreslení okna
         window.decorView.postDelayed({
-            requestStartupPermissions()
-        }, 700L)
+            if (!hasAllNeededPermissions()) {
+                requestPermissionsInternal(null)
+            }
+        }, 800L)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -60,7 +68,25 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    fun requestStartupPermissions() {
+    fun hasLocationPermission(): Boolean {
+        val fine = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        val coarse = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        return fine || coarse
+    }
+
+    fun hasNotificationPermission(): Boolean {
+        return if (Build.VERSION.SDK_INT >= 33) {
+            ContextCompat.checkSelfPermission(this, "android.permission.POST_NOTIFICATIONS") == PackageManager.PERMISSION_GRANTED
+        } else {
+            true
+        }
+    }
+
+    fun hasAllNeededPermissions(): Boolean {
+        return hasLocationPermission() && hasNotificationPermission()
+    }
+
+    fun requestPermissionsInternal(callback: ((Boolean) -> Unit)?) {
         val perms = mutableListOf(
             Manifest.permission.ACCESS_FINE_LOCATION,
             Manifest.permission.ACCESS_COARSE_LOCATION
@@ -71,43 +97,29 @@ class MainActivity : ComponentActivity() {
         val missing = perms.filter {
             ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
         }
-        if (missing.isNotEmpty()) {
-            try {
-                permissionLauncher.launch(missing.toTypedArray())
-            } catch (_: Exception) {}
+        if (missing.isEmpty()) {
+            callback?.invoke(true)
+            return
+        }
+        pendingPermCallback = callback
+        lastRequestTime = System.currentTimeMillis()
+        try {
+            permissionLauncher.launch(missing.toTypedArray())
+        } catch (_: Exception) {
+            pendingPermCallback = null
+            callback?.invoke(false)
         }
     }
 
-    fun ensureLocationPermission(callback: (Boolean) -> Unit) {
-        val fineGranted = ContextCompat.checkSelfPermission(
-            this,
-            Manifest.permission.ACCESS_FINE_LOCATION
-        ) == PackageManager.PERMISSION_GRANTED
-        val coarseGranted = ContextCompat.checkSelfPermission(
-            this,
-            Manifest.permission.ACCESS_COARSE_LOCATION
-        ) == PackageManager.PERMISSION_GRANTED
-
-        if (fineGranted || coarseGranted) {
-            callback(true)
-            return
-        }
-
-        pendingLocationPermissionCallback = callback
-        val perms = mutableListOf(
-            Manifest.permission.ACCESS_FINE_LOCATION,
-            Manifest.permission.ACCESS_COARSE_LOCATION
-        )
-        if (Build.VERSION.SDK_INT >= 33 &&
-            ContextCompat.checkSelfPermission(this, "android.permission.POST_NOTIFICATIONS") != PackageManager.PERMISSION_GRANTED
-        ) {
-            perms.add("android.permission.POST_NOTIFICATIONS")
-        }
+    private fun openAppPermissionSettings() {
         try {
-            permissionLauncher.launch(perms.toTypedArray())
-        } catch (_: Exception) {
-            pendingLocationPermissionCallback = null
-            callback(false)
-        }
+            val intent = Intent(
+                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                Uri.fromParts("package", packageName, null)
+            ).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(intent)
+        } catch (_: Exception) {}
     }
 }
