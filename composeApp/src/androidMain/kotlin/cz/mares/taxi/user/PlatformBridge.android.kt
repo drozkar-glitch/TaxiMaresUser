@@ -68,14 +68,59 @@ actual object PlatformBridge {
     private var pollerStarted = false
     private const val CHANNEL_ID = "taxi_mares_high_channel"
 
+    @Volatile
+    var mapboxToken: String = ""
+        private set
+
+    private val tokenLock = Any()
+
     fun init(activity: MainActivity) {
         appContext = activity.applicationContext
         activityRef = WeakReference(activity)
         try {
             CookieManager.getInstance().setAcceptCookie(true)
         } catch (_: Exception) {}
+        mapboxToken = loadPref("mapbox_token", "")
+        ioExecutor.execute {
+            ensureMapboxTokenLoaded()
+        }
         ensureNotificationChannel()
         startBackgroundInboxPoller()
+    }
+
+    fun ensureMapboxTokenLoaded(): String {
+        if (mapboxToken.isNotBlank()) return mapboxToken
+        synchronized(tokenLock) {
+            if (mapboxToken.isNotBlank()) return mapboxToken
+            val cached = loadPref("mapbox_token", "")
+            if (cached.isNotBlank()) {
+                mapboxToken = cached
+                return mapboxToken
+            }
+            var conn: HttpURLConnection? = null
+            try {
+                val u = URL("${TaxiApi.BASE_URL}/taxi/app/")
+                conn = (u.openConnection() as HttpURLConnection).apply {
+                    requestMethod = "GET"
+                    connectTimeout = 8000
+                    readTimeout = 8000
+                    setRequestProperty("User-Agent", "TaxiMaresApp/2.0")
+                }
+                if (conn.responseCode in 200..299) {
+                    val html = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+                    val match = Regex("""window\.MAPBOX_TOKEN\s*=\s*['"]([^'"]+)['"]""").find(html)
+                    val extracted = match?.groupValues?.getOrNull(1)?.trim() ?: ""
+                    if (extracted.isNotBlank()) {
+                        mapboxToken = extracted
+                        savePref("mapbox_token", extracted)
+                    }
+                }
+            } catch (_: Exception) {
+            } finally {
+                conn?.disconnect()
+            }
+            return mapboxToken
+        }
     }
 
     fun detachActivity(activity: MainActivity) {
@@ -159,7 +204,6 @@ actual object PlatformBridge {
                 Notification.Builder(ctx)
             }
 
-            // DŮLEŽITÉ: R.drawable.ic_launcher je čistý vektor (nikoliv adaptive-icon), takže ho Android 8+ v liště vždy zobrazí
             builder.setSmallIcon(R.drawable.ic_launcher)
                 .setContentTitle(title)
                 .setContentText(body)
@@ -197,7 +241,6 @@ actual object PlatformBridge {
                                 if (m.msgId.isNotBlank() && !seenSet.contains(m.msgId)) {
                                     seenSet.add(m.msgId)
                                     changed = true
-                                    // Při prvním načtení upozorníme na nejnovější nepřečtenou zprávu, poté na každou novou
                                     if (!isFirstRun || m == unread.firstOrNull()) {
                                         showSystemNotification(
                                             id = m.msgId,
@@ -422,15 +465,21 @@ private fun loadMapTileAsync(isDark: Boolean, z: Int, x: Int, y: Int) {
     tileExecutor.execute {
         var conn: HttpURLConnection? = null
         try {
-            val urlStr = if (isDark) {
-                "https://a.basemaps.cartocdn.com/dark_all/$z/$x/$y@2x.png"
+            val mbToken = PlatformBridge.ensureMapboxTokenLoaded()
+            val urlStr = if (mbToken.isNotBlank()) {
+                val styleId = if (isDark) "navigation-night-v1" else "navigation-day-v1"
+                "https://api.mapbox.com/styles/v1/mapbox/$styleId/tiles/256/$z/$x/$y@2x?access_token=$mbToken"
             } else {
-                "${TaxiApi.BASE_URL}/taxi/admin/modules/pricing/assets/tiles.php?mode=tiles&set=basic&tileSize=256&z=$z&x=$x&y=$y&lang=cs"
+                if (isDark) {
+                    "https://a.basemaps.cartocdn.com/dark_all/$z/$x/$y@2x.png"
+                } else {
+                    "https://a.tile.openstreetmap.org/$z/$x/$y.png"
+                }
             }
             val u = URL(urlStr)
             conn = (u.openConnection() as HttpURLConnection).apply {
-                connectTimeout = 7000
-                readTimeout = 7000
+                connectTimeout = 8000
+                readTimeout = 8000
                 setRequestProperty("User-Agent", "TaxiMaresApp/2.0")
                 setRequestProperty("Referer", "${TaxiApi.BASE_URL}/")
             }
@@ -494,7 +543,6 @@ actual fun InteractiveTaxiMap(
         }
     }
 
-    // Automatické vycentrování na celou trasu po výpočtu
     LaunchedEffect(routePoints) {
         if (routePoints.size >= 2) {
             val minLat = routePoints.minOf { it.first }
@@ -544,7 +592,6 @@ actual fun InteractiveTaxiMap(
         ) {
             val w = size.width
             val h = size.height
-            // DŮLEŽITÉ: Přepočet 256.dp na fyzické pixely displeje, aby mapa byla ostrá a čitelná
             val tilePx = 256.dp.toPx()
             val tilePxInt = tilePx.roundToInt()
 
@@ -582,7 +629,6 @@ actual fun InteractiveTaxiMap(
                 return Offset(px, py)
             }
 
-            // Vykreslení trasy (#FFCC00 s černým stínem jako ve style.css)
             if (routePoints.size >= 2) {
                 val path = Path()
                 val first = toScreen(routePoints[0].first, routePoints[0].second)
@@ -603,7 +649,6 @@ actual fun InteractiveTaxiMap(
                 )
             }
 
-            // Špendlík Start
             startPoint?.let { sp ->
                 val pos = toScreen(sp.lat, sp.lon)
                 drawCircle(color = Color.Black, radius = 11.dp.toPx(), center = pos)
@@ -611,7 +656,6 @@ actual fun InteractiveTaxiMap(
                 drawCircle(color = Color.White, radius = 3.5.dp.toPx(), center = pos)
             }
 
-            // Špendlík Cíl
             destPoint?.let { dp ->
                 val pos = toScreen(dp.lat, dp.lon)
                 drawCircle(color = Color.Black, radius = 11.dp.toPx(), center = pos)
@@ -619,7 +663,6 @@ actual fun InteractiveTaxiMap(
                 drawCircle(color = Color.Black, radius = 3.5.dp.toPx(), center = pos)
             }
 
-            // Živý vůz při sledování
             trackingData?.takeIf { it.ok && it.lat != 0.0 && it.lon != 0.0 }?.let { td ->
                 if (td.targetLat != 0.0 && td.targetLon != 0.0) {
                     val tPos = toScreen(td.targetLat, td.targetLon)
