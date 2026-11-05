@@ -8,7 +8,6 @@ import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -18,7 +17,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -34,13 +32,15 @@ fun App() {
     var themePref by remember { mutableStateOf(PlatformBridge.loadPref("taxi_theme", "dark")) }
     val isDark = themePref != "light"
 
-    val bgColor = if (isDark) Color(0xFF0A0A0D) else Color(0xFFF5F6F8)
-    val sheetBg = if (isDark) Color(0xE6121216) else Color(0xF2FFFFFF)
-    val cardBg = if (isDark) Color(0xFF1B1B22) else Color(0xFFF0F2F5)
-    val textColor = if (isDark) Color.White else Color(0xFF111111)
-    val borderColor = if (isDark) Color(0x33FFFFFF) else Color(0x26000000)
+    // WATER GLASS BAREVNÁ PALETA PŘESNĚ PODLE STYLE.CSS
+    val bgColor = if (isDark) Color(0xFF000000) else Color(0xFFFFFFFF)
+    val sheetBg = if (isDark) Color(0xCC0F0F12) else Color(0xD9FFFFFF)
+    val cardBg = if (isDark) Color(0x14FFFFFF) else Color(0x0D000000)
+    val solidCardBg = if (isDark) Color(0xFF141418) else Color(0xFFFFFFFF)
+    val textColor = if (isDark) Color(0xFFFFFFFF) else Color(0xFF000000)
+    val borderColor = if (isDark) Color(0x26FFFFFF) else Color(0x26000000)
     val brandColor = if (isDark) Color(0xFFFFCC00) else Color(0xFF2ECC71)
-    val brandTextColor = if (isDark) Color.Black else Color.White
+    val brandTextColor = if (isDark) Color(0xFF000000) else Color(0xFFFFFFFF)
 
     var userProfile by remember { mutableStateOf(UserProfile()) }
     var unreadCount by remember { mutableStateOf(0) }
@@ -83,20 +83,93 @@ fun App() {
     var preselectedPayOrderId by remember { mutableStateOf<String?>(null) }
     var webModalUrl by remember { mutableStateOf<Pair<String, String>?>(null) }
 
+    fun handleDeepLinkAction(url: String) {
+        if (url.isBlank()) return
+        val trackMatch = Regex("""[?&](?:track|p)=([^&]+)""").find(url)?.groupValues?.getOrNull(1)
+        val openMatch = Regex("""[?&]open=([^&]+)""").find(url)?.groupValues?.getOrNull(1)
+        val oidMatch = Regex("""[?&](?:oid|order_id|id)=([^&]+)""").find(url)?.groupValues?.getOrNull(1)
+
+        if (!trackMatch.isNullOrBlank()) {
+            activeTrackingToken = trackMatch
+            activeView = "home"
+            sheetStop = SheetStop.MIN
+        } else if (url.contains("pay=1") && !oidMatch.isNullOrBlank()) {
+            preselectedPayOrderId = oidMatch
+            activeView = "requests"
+            barTitle = "Potvrzení platby"
+            sheetStop = SheetStop.MAX
+        } else if (!openMatch.isNullOrBlank()) {
+            activeView = openMatch
+            barTitle = when (openMatch) {
+                "orders" -> "🚕 Moje objednávky"
+                "requests" -> "⏳ Moje poptávky"
+                "invoices" -> "Moje doklady"
+                "inbox" -> "Doručená pošta"
+                else -> "Taxi Mareš"
+            }
+            sheetStop = SheetStop.MAX
+        } else {
+            activeView = "inbox"
+            barTitle = "Doručená pošta"
+            sheetStop = SheetStop.MAX
+        }
+    }
+
+    // AKTIVNÍ RADAR NA NOTIFIKACE A PROKLIKY Z HORNÍ LIŠTY TELEFONU
     LaunchedEffect(token) {
         if (token.isNotBlank()) {
             TaxiApi.fetchUserProfile { prof ->
                 if (prof != null) {
                     userProfile = prof
-                    if (activeView == "home") {
+                    if (activeView == "home" && activeTrackingToken == null) {
                         barTitle = CzechVocativeHelper.greetingFor(prof.name)
                     }
                 }
             }
-            TaxiApi.fetchUnreadCount { unreadCount = it }
+
+            var isFirstPoll = true
+            while (token.isNotBlank()) {
+                PlatformBridge.consumePendingNotificationUrl()?.let { clickedUrl ->
+                    handleDeepLinkAction(clickedUrl)
+                }
+
+                TaxiApi.fetchInboxMessages { res ->
+                    res.onSuccess { msgList ->
+                        val unreadList = msgList.filter { !it.isRead }
+                        unreadCount = unreadList.size
+
+                        val seenRaw = PlatformBridge.loadPref("seen_push_ids", "")
+                        val seenSet = seenRaw.split(",").filter { it.isNotBlank() }.toMutableSet()
+                        var changed = false
+
+                        for (m in unreadList) {
+                            if (m.msgId.isNotBlank() && !seenSet.contains(m.msgId)) {
+                                seenSet.add(m.msgId)
+                                changed = true
+                                if (!isFirstPoll) {
+                                    PlatformBridge.showSystemNotification(
+                                        id = m.msgId,
+                                        title = m.title.ifBlank { "Taxi Mareš" },
+                                        body = m.body,
+                                        actionUrl = m.actionUrl.ifBlank { "?open=inbox" }
+                                    )
+                                }
+                            }
+                        }
+
+                        if (changed) {
+                            val trimmed = seenSet.toList().takeLast(80).joinToString(",")
+                            PlatformBridge.savePref("seen_push_ids", trimmed)
+                        }
+                        isFirstPoll = false
+                    }
+                }
+                delay(6000L)
+            }
         }
     }
 
+    // Pravidelná obnova živého sledování vozu (každé 3 sekundy)
     LaunchedEffect(activeTrackingToken) {
         while (activeTrackingToken != null) {
             val tk = activeTrackingToken ?: break
@@ -170,9 +243,9 @@ fun App() {
 
     MaterialTheme(
         colors = if (isDark) {
-            darkColors(primary = brandColor, background = bgColor, surface = cardBg)
+            darkColors(primary = brandColor, background = bgColor, surface = solidCardBg)
         } else {
-            lightColors(primary = brandColor, background = bgColor, surface = cardBg)
+            lightColors(primary = brandColor, background = bgColor, surface = solidCardBg)
         }
     ) {
         BoxWithConstraints(
@@ -185,10 +258,11 @@ fun App() {
 
             if (token.isBlank()) {
                 NativeLoginScreen(
+                    isDark = isDark,
                     brandColor = brandColor,
                     brandTextColor = brandTextColor,
                     textColor = textColor,
-                    cardBg = cardBg,
+                    cardBg = solidCardBg,
                     borderColor = borderColor,
                     onLoginSuccess = { newToken ->
                         token = newToken
@@ -222,7 +296,7 @@ fun App() {
                         ) {
                             Box(
                                 modifier = Modifier
-                                    .size(42.dp)
+                                    .size(44.dp)
                                     .background(Color(0xFFFFCC00), CircleShape)
                                     .border(3.dp, Color.Black, CircleShape),
                                 contentAlignment = Alignment.Center
@@ -240,7 +314,7 @@ fun App() {
                             backgroundColor = sheetBg,
                             shape = RoundedCornerShape(20.dp),
                             border = BorderStroke(1.dp, borderColor),
-                            elevation = 12.dp,
+                            elevation = 0.dp,
                             modifier = Modifier
                                 .align(Alignment.BottomCenter)
                                 .fillMaxWidth()
@@ -297,12 +371,13 @@ fun App() {
                     }
                 }
 
+                // SMART GLASS SHEET (POLOPRŮHLEDNÝ SKLENĚNÝ PANEL NAD MAPOU)
                 if (mapPickTargetField == null) {
                     val targetSheetHeight = when {
-                        activeTrackingToken != null && activeView == "home" -> 92.dp
-                        sheetStop == SheetStop.MIN -> 92.dp
-                        sheetStop == SheetStop.MID -> (screenHeight * 0.54f).coerceAtLeast(340.dp)
-                        else -> screenHeight * 0.92f
+                        activeTrackingToken != null && activeView == "home" -> 86.dp
+                        sheetStop == SheetStop.MIN -> 86.dp
+                        sheetStop == SheetStop.MID -> (screenHeight * 0.52f).coerceAtLeast(330.dp)
+                        else -> screenHeight * 0.90f
                     }
                     val animatedHeight by animateDpAsState(
                         targetValue = targetSheetHeight,
@@ -311,17 +386,17 @@ fun App() {
 
                     var dragAccum by remember { mutableStateOf(0f) }
 
-                    Surface(
-                        color = sheetBg,
-                        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
-                        border = BorderStroke(1.dp, borderColor),
-                        elevation = 16.dp,
+                    Box(
                         modifier = Modifier
                             .align(Alignment.BottomCenter)
                             .fillMaxWidth()
                             .height(animatedHeight)
+                            .clip(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp))
+                            .background(sheetBg)
+                            .border(1.dp, borderColor, RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp))
                     ) {
                         Column(modifier = Modifier.fillMaxSize()) {
+                            // HORNÍ LIŠTA GLASS SHEETU
                             Box(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -356,7 +431,7 @@ fun App() {
                                     modifier = Modifier
                                         .align(Alignment.TopCenter)
                                         .padding(top = 12.dp)
-                                        .size(width = 42.dp, height = 5.dp)
+                                        .size(width = 40.dp, height = 5.dp)
                                         .background(textColor.copy(alpha = 0.25f), RoundedCornerShape(3.dp))
                                 )
 
@@ -367,14 +442,14 @@ fun App() {
                                     fontSize = 16.sp,
                                     modifier = Modifier
                                         .align(Alignment.Center)
-                                        .padding(top = 10.dp, end = 36.dp)
+                                        .padding(top = 10.dp)
                                 )
 
                                 if (activeView != "home" || activeTrackingToken != null) {
                                     Box(
                                         modifier = Modifier
                                             .align(Alignment.CenterEnd)
-                                            .size(34.dp)
+                                            .size(32.dp)
                                             .background(cardBg, CircleShape)
                                             .border(1.dp, borderColor, CircleShape)
                                             .clickable {
@@ -413,6 +488,7 @@ fun App() {
 
                                     "order" -> {
                                         TwoPhaseOrderCalculatorView(
+                                            isDark = isDark,
                                             routeType = routeType,
                                             onRouteTypeChange = {
                                                 routeType = it
@@ -515,6 +591,7 @@ fun App() {
                                             brandTextColor = brandTextColor,
                                             textColor = textColor,
                                             cardBg = cardBg,
+                                            solidCardBg = solidCardBg,
                                             borderColor = borderColor,
                                             onProceedToReview = {
                                                 val s = startPoint
@@ -578,6 +655,7 @@ fun App() {
 
                                     "inbox" -> {
                                         InboxView(
+                                            isDark = isDark,
                                             brandColor = brandColor,
                                             textColor = textColor,
                                             cardBg = cardBg,
@@ -638,6 +716,7 @@ fun App() {
 
                                     "account" -> {
                                         AccountView(
+                                            isDark = isDark,
                                             userProfile = userProfile,
                                             onProfileReload = {
                                                 TaxiApi.fetchUserProfile { prof ->
@@ -688,7 +767,7 @@ fun App() {
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .background(cardBg)
+                                .background(solidCardBg)
                                 .padding(horizontal = 16.dp, vertical = 12.dp),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
@@ -723,6 +802,7 @@ fun App() {
 
 @Composable
 fun NativeLoginScreen(
+    isDark: Boolean,
     brandColor: Color,
     brandTextColor: Color,
     textColor: Color,
@@ -777,34 +857,30 @@ fun NativeLoginScreen(
                     }
                 }
 
-                OutlinedTextField(
-                    value = email,
-                    onValueChange = { email = it },
-                    label = { Text("E-mailová adresa", color = textColor.copy(alpha = 0.7f)) },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
-                    colors = TextFieldDefaults.outlinedTextFieldColors(
-                        textColor = textColor,
-                        focusedBorderColor = brandColor,
-                        unfocusedBorderColor = borderColor
-                    ),
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
+                Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("E-MAIL", color = textColor.copy(alpha = 0.7f), fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
+                    WaterGlassInput(
+                        value = email,
+                        onValueChange = { email = it },
+                        placeholder = "E-mailová adresa",
+                        isDark = isDark,
+                        brandColor = brandColor,
+                        keyboardType = KeyboardType.Email
+                    )
+                }
 
-                OutlinedTextField(
-                    value = password,
-                    onValueChange = { password = it },
-                    label = { Text("Heslo", color = textColor.copy(alpha = 0.7f)) },
-                    visualTransformation = PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                    colors = TextFieldDefaults.outlinedTextFieldColors(
-                        textColor = textColor,
-                        focusedBorderColor = brandColor,
-                        unfocusedBorderColor = borderColor
-                    ),
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
+                Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("HESLO", color = textColor.copy(alpha = 0.7f), fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
+                    WaterGlassInput(
+                        value = password,
+                        onValueChange = { password = it },
+                        placeholder = "Heslo (••••••••)",
+                        isDark = isDark,
+                        brandColor = brandColor,
+                        isPassword = true,
+                        keyboardType = KeyboardType.Password
+                    )
+                }
 
                 Button(
                     onClick = {
@@ -847,7 +923,7 @@ fun NativeLoginScreen(
                         border = BorderStroke(1.dp, borderColor),
                         shape = RoundedCornerShape(12.dp),
                         colors = ButtonDefaults.outlinedButtonColors(backgroundColor = Color.Transparent),
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.weight(1f).height(46.dp)
                     ) {
                         Text("Nová registrace", color = textColor, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                     }
@@ -858,7 +934,7 @@ fun NativeLoginScreen(
                         border = BorderStroke(1.dp, borderColor),
                         shape = RoundedCornerShape(12.dp),
                         colors = ButtonDefaults.outlinedButtonColors(backgroundColor = Color.Transparent),
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.weight(1f).height(46.dp)
                     ) {
                         Text("Zapomenuté heslo?", color = textColor, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                     }
@@ -906,7 +982,7 @@ fun HomeMenuGrid(
         modifier = Modifier
             .fillMaxWidth()
             .verticalScroll(rememberScrollState())
-            .padding(top = 6.dp, bottom = 28.dp),
+            .padding(top = 8.dp, bottom = 28.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         rows.forEach { pair ->
@@ -918,14 +994,13 @@ fun HomeMenuGrid(
                     Box(
                         modifier = Modifier
                             .weight(1f)
-                            .background(cardBg, RoundedCornerShape(18.dp))
+                            .clip(RoundedCornerShape(18.dp))
+                            .background(cardBg)
                             .border(1.dp, borderColor, RoundedCornerShape(18.dp))
                             .clickable {
                                 when (key) {
                                     "dispatch" -> PlatformBridge.dialPhone("+420606420002")
-                                    "order" -> {
-                                        onSelectView("order", "Nová objednávka", SheetStop.MID)
-                                    }
+                                    "order" -> onSelectView("order", "Nová objednávka", SheetStop.MID)
                                     "inbox" -> onSelectView("inbox", "Doručená pošta", SheetStop.MAX)
                                     "requests" -> onSelectView("requests", "⏳ Moje poptávky", SheetStop.MAX)
                                     "orders" -> onSelectView("orders", "🚕 Moje objednávky", SheetStop.MAX)
@@ -947,11 +1022,11 @@ fun HomeMenuGrid(
                                             .offset(x = 6.dp, y = (-2).dp)
                                             .size(12.dp)
                                             .background(Color(0xFFE74C3C), CircleShape)
-                                            .border(2.dp, cardBg, CircleShape)
+                                            .border(2.dp, Color.Black, CircleShape)
                                     )
                                 }
                             }
-                            Spacer(Modifier.height(6.dp))
+                            Spacer(Modifier.height(8.dp))
                             Text(label, color = textColor, fontWeight = FontWeight.ExtraBold, fontSize = 13.sp)
                         }
                     }
@@ -972,6 +1047,7 @@ fun HomeMenuGrid(
 
 @Composable
 fun TwoPhaseOrderCalculatorView(
+    isDark: Boolean,
     routeType: String,
     onRouteTypeChange: (String) -> Unit,
     startPoint: GeoPoint?,
@@ -1016,6 +1092,7 @@ fun TwoPhaseOrderCalculatorView(
     brandTextColor: Color,
     textColor: Color,
     cardBg: Color,
+    solidCardBg: Color,
     borderColor: Color,
     onProceedToReview: () -> Unit
 ) {
@@ -1066,6 +1143,7 @@ fun TwoPhaseOrderCalculatorView(
         }
 
         NativeAddressField(
+            isDark = isDark,
             icon = "🟢",
             placeholder = "Odkud pojedete? *",
             point = startPoint,
@@ -1074,7 +1152,7 @@ fun TwoPhaseOrderCalculatorView(
             onTypingStart = onTypingExpandSheet,
             brandColor = brandColor,
             textColor = textColor,
-            cardBg = cardBg,
+            solidCardBg = solidCardBg,
             borderColor = borderColor
         )
 
@@ -1095,28 +1173,20 @@ fun TwoPhaseOrderCalculatorView(
                     fontWeight = FontWeight.SemiBold
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(
+                    WaterGlassInput(
                         value = flightNumber,
                         onValueChange = { onFlightNumberChange(it.uppercase()) },
-                        placeholder = { Text("Číslo letu (QS1234)", color = textColor.copy(alpha = 0.5f), fontSize = 12.sp) },
-                        colors = TextFieldDefaults.outlinedTextFieldColors(
-                            textColor = textColor,
-                            focusedBorderColor = brandColor,
-                            unfocusedBorderColor = borderColor
-                        ),
-                        singleLine = true,
+                        placeholder = "Let (QS1234)",
+                        isDark = isDark,
+                        brandColor = brandColor,
                         modifier = Modifier.weight(1f)
                     )
-                    OutlinedTextField(
+                    WaterGlassInput(
                         value = flightDate,
                         onValueChange = onFlightDateChange,
-                        placeholder = { Text("RRRR-MM-DD", color = textColor.copy(alpha = 0.5f), fontSize = 12.sp) },
-                        colors = TextFieldDefaults.outlinedTextFieldColors(
-                            textColor = textColor,
-                            focusedBorderColor = brandColor,
-                            unfocusedBorderColor = borderColor
-                        ),
-                        singleLine = true,
+                        placeholder = "RRRR-MM-DD",
+                        isDark = isDark,
+                        brandColor = brandColor,
                         modifier = Modifier.weight(1f)
                     )
                 }
@@ -1125,6 +1195,7 @@ fun TwoPhaseOrderCalculatorView(
 
         if (showVia1) {
             NativeAddressField(
+                isDark = isDark,
                 icon = "⚪",
                 placeholder = "Mezizastávka 1",
                 point = via1Point,
@@ -1136,13 +1207,14 @@ fun TwoPhaseOrderCalculatorView(
                 onTypingStart = onTypingExpandSheet,
                 brandColor = brandColor,
                 textColor = textColor,
-                cardBg = cardBg,
+                solidCardBg = solidCardBg,
                 borderColor = borderColor
             )
         }
 
         if (showVia2) {
             NativeAddressField(
+                isDark = isDark,
                 icon = "⚪",
                 placeholder = "Mezizastávka 2",
                 point = via2Point,
@@ -1154,7 +1226,7 @@ fun TwoPhaseOrderCalculatorView(
                 onTypingStart = onTypingExpandSheet,
                 brandColor = brandColor,
                 textColor = textColor,
-                cardBg = cardBg,
+                solidCardBg = solidCardBg,
                 borderColor = borderColor
             )
         }
@@ -1176,6 +1248,7 @@ fun TwoPhaseOrderCalculatorView(
         }
 
         NativeAddressField(
+            isDark = isDark,
             icon = "🏁",
             placeholder = "Kam to bude? *",
             point = destPoint,
@@ -1184,7 +1257,7 @@ fun TwoPhaseOrderCalculatorView(
             onTypingStart = onTypingExpandSheet,
             brandColor = brandColor,
             textColor = textColor,
-            cardBg = cardBg,
+            solidCardBg = solidCardBg,
             borderColor = borderColor
         )
 
@@ -1210,23 +1283,21 @@ fun TwoPhaseOrderCalculatorView(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            OutlinedTextField(
+                            WaterGlassInput(
                                 value = rideTerm,
                                 onValueChange = onRideTermChange,
-                                placeholder = { Text("Co nejdříve (ASAP)", color = textColor.copy(alpha = 0.5f), fontSize = 13.sp) },
-                                colors = TextFieldDefaults.outlinedTextFieldColors(
-                                    textColor = textColor,
-                                    focusedBorderColor = brandColor,
-                                    unfocusedBorderColor = borderColor
-                                ),
-                                singleLine = true,
+                                placeholder = "Co nejdříve (ASAP)",
+                                isDark = isDark,
+                                brandColor = brandColor,
                                 modifier = Modifier.weight(1f)
                             )
                             Button(
                                 onClick = onAsapClick,
-                                colors = ButtonDefaults.buttonColors(backgroundColor = borderColor),
-                                shape = RoundedCornerShape(10.dp),
-                                modifier = Modifier.height(52.dp)
+                                colors = ButtonDefaults.buttonColors(backgroundColor = cardBg),
+                                border = BorderStroke(1.dp, borderColor),
+                                shape = RoundedCornerShape(12.dp),
+                                elevation = null,
+                                modifier = Modifier.height(50.dp)
                             ) {
                                 Text("Co nejdřív", color = textColor, fontWeight = FontWeight.ExtraBold, fontSize = 13.sp)
                             }
@@ -1236,32 +1307,24 @@ fun TwoPhaseOrderCalculatorView(
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             Text("POČET OSOB", color = textColor.copy(alpha = 0.6f), fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
-                            OutlinedTextField(
+                            WaterGlassInput(
                                 value = personsStr,
                                 onValueChange = { onPersonsChange(it.filter { c -> c.isDigit() }) },
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                colors = TextFieldDefaults.outlinedTextFieldColors(
-                                    textColor = textColor,
-                                    focusedBorderColor = brandColor,
-                                    unfocusedBorderColor = borderColor
-                                ),
-                                singleLine = true,
-                                modifier = Modifier.fillMaxWidth()
+                                placeholder = "Např. 4",
+                                isDark = isDark,
+                                brandColor = brandColor,
+                                keyboardType = KeyboardType.Number
                             )
                         }
                         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             Text("ČEKÁNÍ (MIN)", color = textColor.copy(alpha = 0.6f), fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
-                            OutlinedTextField(
+                            WaterGlassInput(
                                 value = waitMinStr,
                                 onValueChange = { onWaitMinChange(it.filter { c -> c.isDigit() }) },
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                colors = TextFieldDefaults.outlinedTextFieldColors(
-                                    textColor = textColor,
-                                    focusedBorderColor = brandColor,
-                                    unfocusedBorderColor = borderColor
-                                ),
-                                singleLine = true,
-                                modifier = Modifier.fillMaxWidth()
+                                placeholder = "0",
+                                isDark = isDark,
+                                brandColor = brandColor,
+                                keyboardType = KeyboardType.Number
                             )
                         }
                     }
@@ -1284,32 +1347,24 @@ fun TwoPhaseOrderCalculatorView(
                             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                                 Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                     Text("PODSEDÁK", color = textColor.copy(alpha = 0.6f), fontSize = 11.sp, fontWeight = FontWeight.ExtraBold)
-                                    OutlinedTextField(
+                                    WaterGlassInput(
                                         value = boosterSeatsStr,
                                         onValueChange = { onBoosterSeatsChange(it.filter { c -> c.isDigit() }) },
-                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                        colors = TextFieldDefaults.outlinedTextFieldColors(
-                                            textColor = textColor,
-                                            focusedBorderColor = brandColor,
-                                            unfocusedBorderColor = borderColor
-                                        ),
-                                        singleLine = true,
-                                        modifier = Modifier.fillMaxWidth()
+                                        placeholder = "0",
+                                        isDark = isDark,
+                                        brandColor = brandColor,
+                                        keyboardType = KeyboardType.Number
                                     )
                                 }
                                 Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                     Text("AUTOSEDAČKA", color = textColor.copy(alpha = 0.6f), fontSize = 11.sp, fontWeight = FontWeight.ExtraBold)
-                                    OutlinedTextField(
+                                    WaterGlassInput(
                                         value = childSeatsStr,
                                         onValueChange = { onChildSeatsChange(it.filter { c -> c.isDigit() }) },
-                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                        colors = TextFieldDefaults.outlinedTextFieldColors(
-                                            textColor = textColor,
-                                            focusedBorderColor = brandColor,
-                                            unfocusedBorderColor = borderColor
-                                        ),
-                                        singleLine = true,
-                                        modifier = Modifier.fillMaxWidth()
+                                        placeholder = "0",
+                                        isDark = isDark,
+                                        brandColor = brandColor,
+                                        keyboardType = KeyboardType.Number
                                     )
                                 }
                             }
@@ -1382,7 +1437,7 @@ fun TwoPhaseOrderCalculatorView(
                     ) {
                         Column {
                             Text("ODHADOVANÁ CENA", color = textColor.copy(alpha = 0.6f), fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
-                            Text("${pricingResult.totalKc} Kč", color = textColor, fontSize = 30.sp, fontWeight = FontWeight.Black)
+                            Text("${pricingResult.totalKc} Kč", color = textColor, fontSize = 32.sp, fontWeight = FontWeight.Black)
                         }
                         Column(horizontalAlignment = Alignment.End) {
                             Text("VZDÁLENOST", color = textColor.copy(alpha = 0.6f), fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
@@ -1407,6 +1462,7 @@ fun TwoPhaseOrderCalculatorView(
 
 @Composable
 fun NativeAddressField(
+    isDark: Boolean,
     icon: String,
     placeholder: String,
     point: GeoPoint?,
@@ -1415,7 +1471,7 @@ fun NativeAddressField(
     onTypingStart: () -> Unit,
     brandColor: Color,
     textColor: Color,
-    cardBg: Color,
+    solidCardBg: Color,
     borderColor: Color
 ) {
     var text by remember(point) { mutableStateOf(point?.label ?: "") }
@@ -1424,7 +1480,7 @@ fun NativeAddressField(
     var isLocating by remember { mutableStateOf(false) }
 
     Column(modifier = Modifier.fillMaxWidth()) {
-        OutlinedTextField(
+        WaterGlassInput(
             value = if (isLocating) "Hledám vás..." else text,
             onValueChange = { newVal ->
                 text = newVal
@@ -1442,33 +1498,38 @@ fun NativeAddressField(
                     }
                 }
             },
-            placeholder = { Text(placeholder, color = textColor.copy(alpha = 0.5f), fontWeight = FontWeight.Bold) },
+            placeholder = placeholder,
+            isDark = isDark,
+            brandColor = brandColor,
+            isHighlighted = point != null,
             leadingIcon = { Text(icon, fontSize = 16.sp) },
             trailingIcon = {
                 if (text.isNotEmpty() || point != null) {
-                    IconButton(onClick = {
-                        text = ""
-                        suggestions = emptyList()
-                        onPointSelected(null)
-                        showActionMenu = true
-                    }) {
-                        Text("✕", color = Color(0xFFE74C3C), fontWeight = FontWeight.Black, fontSize = 16.sp)
-                    }
+                    Text(
+                        "✕",
+                        color = Color(0xFFE74C3C),
+                        fontWeight = FontWeight.Black,
+                        fontSize = 18.sp,
+                        modifier = Modifier
+                            .clickable {
+                                text = ""
+                                suggestions = emptyList()
+                                onPointSelected(null)
+                                showActionMenu = true
+                            }
+                            .padding(horizontal = 4.dp)
+                    )
                 } else {
-                    IconButton(onClick = { showActionMenu = !showActionMenu }) {
-                        Text(if (showActionMenu) "▲" else "▼", color = brandColor, fontSize = 12.sp)
-                    }
+                    Text(
+                        if (showActionMenu) "▲" else "📍",
+                        color = brandColor,
+                        fontSize = 15.sp,
+                        modifier = Modifier
+                            .clickable { showActionMenu = !showActionMenu }
+                            .padding(horizontal = 4.dp)
+                    )
                 }
-            },
-            colors = TextFieldDefaults.outlinedTextFieldColors(
-                textColor = if (point != null) brandColor else textColor,
-                backgroundColor = cardBg,
-                focusedBorderColor = brandColor,
-                unfocusedBorderColor = if (point != null) brandColor else borderColor
-            ),
-            shape = RoundedCornerShape(16.dp),
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth()
+            }
         )
 
         if (showActionMenu && text.isEmpty() && point == null) {
@@ -1476,7 +1537,7 @@ fun NativeAddressField(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(top = 4.dp)
-                    .background(cardBg, RoundedCornerShape(12.dp))
+                    .background(solidCardBg, RoundedCornerShape(12.dp))
                     .border(1.dp, borderColor, RoundedCornerShape(12.dp))
             ) {
                 Row(
@@ -1527,8 +1588,8 @@ fun NativeAddressField(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(top = 4.dp)
-                    .background(cardBg, RoundedCornerShape(14.dp))
-                    .border(1.dp, brandColor.copy(alpha = 0.5f), RoundedCornerShape(14.dp))
+                    .background(solidCardBg, RoundedCornerShape(14.dp))
+                    .border(1.dp, brandColor, RoundedCornerShape(14.dp))
             ) {
                 suggestions.take(6).forEachIndexed { index, item ->
                     Box(
@@ -1540,9 +1601,9 @@ fun NativeAddressField(
                                 showActionMenu = false
                                 onPointSelected(GeoPoint(item.lat, item.lon, item.inputLabel))
                             }
-                            .padding(horizontal = 14.dp, vertical = 12.dp)
+                            .padding(horizontal = 14.dp, vertical = 14.dp)
                     ) {
-                        Text(item.listLabel, color = textColor, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                        Text(item.listLabel, color = textColor, fontWeight = FontWeight.Bold, fontSize = 15.sp)
                     }
                     if (index < minOf(suggestions.size, 6) - 1) {
                         Divider(color = borderColor)

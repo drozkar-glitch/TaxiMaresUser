@@ -36,6 +36,7 @@ import kotlin.math.*
 
 actual object PlatformBridge {
     private val taxiLocationMgr = CLLocationManager()
+    private var pendingUrl: String? = null
 
     actual fun httpRequest(
         url: String,
@@ -115,6 +116,16 @@ actual object PlatformBridge {
         } else {
             callback(50.4222208, 14.2540608)
         }
+    }
+
+    actual fun showSystemNotification(id: String, title: String, body: String, actionUrl: String) {
+        pendingUrl = actionUrl
+    }
+
+    actual fun consumePendingNotificationUrl(): String? {
+        val u = pendingUrl
+        pendingUrl = null
+        return u
     }
 
     actual fun openExternalUrl(url: String) {

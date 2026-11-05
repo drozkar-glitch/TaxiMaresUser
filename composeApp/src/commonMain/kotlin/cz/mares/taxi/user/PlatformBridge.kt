@@ -19,6 +19,8 @@ expect object PlatformBridge {
     fun currentDateIso(): String
     fun formatDateTimeOffset(minutesFromNow: Int): String
     fun requestLocation(callback: (Double?, Double?) -> Unit)
+    fun showSystemNotification(id: String, title: String, body: String, actionUrl: String)
+    fun consumePendingNotificationUrl(): String?
     fun openExternalUrl(url: String)
     fun dialPhone(phone: String)
 }

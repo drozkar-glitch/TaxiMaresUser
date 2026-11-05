@@ -4,6 +4,7 @@ import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.*
 import androidx.compose.runtime.*
@@ -11,16 +12,86 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 @Composable
+fun WaterGlassInput(
+    value: String,
+    onValueChange: (String) -> Unit,
+    placeholder: String,
+    isDark: Boolean,
+    brandColor: Color,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    isHighlighted: Boolean = false,
+    isPassword: Boolean = false,
+    keyboardType: KeyboardType = KeyboardType.Text,
+    leadingIcon: (@Composable () -> Unit)? = null,
+    trailingIcon: (@Composable () -> Unit)? = null
+) {
+    val formBg = if (isDark) Color(0xFF000000) else Color(0xFFFFFFFF)
+    val formText = if (isHighlighted) brandColor else if (isDark) brandColor else Color(0xFF000000)
+    val formBorder = if (isHighlighted) brandColor else if (isDark) Color(0xFFFFFFFF) else Color(0xFF000000)
+
+    BasicTextField(
+        value = value,
+        onValueChange = onValueChange,
+        enabled = enabled,
+        singleLine = true,
+        textStyle = TextStyle(
+            color = formText,
+            fontSize = 16.sp,
+            fontWeight = FontWeight.Bold
+        ),
+        cursorBrush = SolidColor(brandColor),
+        visualTransformation = if (isPassword) PasswordVisualTransformation() else VisualTransformation.None,
+        keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
+        decorationBox = { innerTextField ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(formBg, RoundedCornerShape(14.dp))
+                    .border(1.dp, formBorder, RoundedCornerShape(14.dp))
+                    .padding(horizontal = 14.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (leadingIcon != null) {
+                    leadingIcon()
+                    Spacer(Modifier.width(10.dp))
+                }
+                Box(modifier = Modifier.weight(1f)) {
+                    if (value.isEmpty()) {
+                        Text(
+                            text = placeholder,
+                            color = formText.copy(alpha = 0.48f),
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                    innerTextField()
+                }
+                if (trailingIcon != null) {
+                    Spacer(Modifier.width(8.dp))
+                    trailingIcon()
+                }
+            }
+        },
+        modifier = modifier
+    )
+}
+
+@Composable
 fun InboxView(
+    isDark: Boolean,
     brandColor: Color,
     textColor: Color,
     cardBg: Color,
@@ -82,7 +153,8 @@ fun InboxView(
                 Spacer(Modifier.height(12.dp))
                 Button(
                     onClick = { loadInbox() },
-                    colors = ButtonDefaults.buttonColors(backgroundColor = brandColor)
+                    colors = ButtonDefaults.buttonColors(backgroundColor = brandColor),
+                    shape = RoundedCornerShape(12.dp)
                 ) {
                     Text("Zkusit znovu", color = Color.Black, fontWeight = FontWeight.Bold)
                 }
@@ -149,7 +221,7 @@ fun InboxView(
                                 onClick = { onInitiatePayFromInbox(msg.orderId) },
                                 colors = ButtonDefaults.buttonColors(backgroundColor = Color(0xFF2ECC71)),
                                 shape = RoundedCornerShape(12.dp),
-                                modifier = Modifier.weight(2f)
+                                modifier = Modifier.weight(2f).height(46.dp)
                             ) {
                                 Text("💳 Zaplatit", color = Color.White, fontWeight = FontWeight.Black)
                             }
@@ -163,7 +235,7 @@ fun InboxView(
                                 border = BorderStroke(1.dp, Color(0xFFE74C3C)),
                                 shape = RoundedCornerShape(12.dp),
                                 colors = ButtonDefaults.outlinedButtonColors(backgroundColor = Color.Transparent),
-                                modifier = Modifier.weight(1f)
+                                modifier = Modifier.weight(1f).height(46.dp)
                             ) {
                                 Text("❌ Zrušit", color = Color(0xFFE74C3C), fontWeight = FontWeight.Bold)
                             }
@@ -201,10 +273,9 @@ fun InboxView(
             }
         }
 
-        // Modální panel pro rychlou odpověď řidiči
         replyTarget?.let { (token, type) ->
             Card(
-                backgroundColor = cardBg,
+                backgroundColor = if (isDark) Color(0xFF141418) else Color.White,
                 shape = RoundedCornerShape(20.dp),
                 border = BorderStroke(1.dp, brandColor),
                 modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
@@ -218,9 +289,9 @@ fun InboxView(
                                 replyTarget = null
                             }
                         },
-                        colors = ButtonDefaults.buttonColors(backgroundColor = borderColor),
+                        colors = ButtonDefaults.buttonColors(backgroundColor = cardBg),
                         shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth().height(48.dp)
                     ) {
                         Text("👍 Už jdu ven", color = textColor, fontWeight = FontWeight.Bold)
                     }
@@ -231,9 +302,9 @@ fun InboxView(
                                 replyTarget = null
                             }
                         },
-                        colors = ButtonDefaults.buttonColors(backgroundColor = borderColor),
+                        colors = ButtonDefaults.buttonColors(backgroundColor = cardBg),
                         shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth().height(48.dp)
                     ) {
                         Text("⏱️ Zdržím se 5 minut", color = textColor, fontWeight = FontWeight.Bold)
                     }
@@ -252,13 +323,13 @@ fun InboxView(
                                         replyTarget = null
                                     }
                                 } else {
-                                    actionStatusMsg = "⚠️ Nepodařilo se zjistit polohu (zkontrolujte GPS)."
+                                    actionStatusMsg = "⚠️ Povolte prosím přístup k GPS poloze."
                                 }
                             }
                         },
                         colors = ButtonDefaults.buttonColors(backgroundColor = brandColor.copy(alpha = 0.2f)),
                         shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth().height(48.dp)
                     ) {
                         Text("📍 Upřesnit moji polohu", color = brandColor, fontWeight = FontWeight.ExtraBold)
                     }
@@ -267,17 +338,13 @@ fun InboxView(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        OutlinedTextField(
+                        WaterGlassInput(
                             value = customReplyText,
                             onValueChange = { customReplyText = it },
-                            placeholder = { Text("Napsat vlastní...", color = textColor.copy(alpha = 0.5f)) },
-                            colors = TextFieldDefaults.outlinedTextFieldColors(
-                                textColor = textColor,
-                                focusedBorderColor = brandColor,
-                                unfocusedBorderColor = borderColor
-                            ),
-                            modifier = Modifier.weight(1f),
-                            singleLine = true
+                            placeholder = "Napsat vlastní...",
+                            isDark = isDark,
+                            brandColor = brandColor,
+                            modifier = Modifier.weight(1f)
                         )
                         Button(
                             onClick = {
@@ -290,7 +357,8 @@ fun InboxView(
                                 }
                             },
                             colors = ButtonDefaults.buttonColors(backgroundColor = brandColor),
-                            shape = RoundedCornerShape(12.dp)
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.height(50.dp)
                         ) {
                             Text("Odeslat", color = Color.Black, fontWeight = FontWeight.ExtraBold)
                         }
@@ -299,7 +367,7 @@ fun InboxView(
                         onClick = { replyTarget = null },
                         modifier = Modifier.align(Alignment.CenterHorizontally)
                     ) {
-                        Text("Zavřít", color = textColor.copy(alpha = 0.7f))
+                        Text("Zrušit", color = textColor.copy(alpha = 0.7f))
                     }
                 }
             }
@@ -688,7 +756,7 @@ fun OrdersListView(
                             border = BorderStroke(1.dp, Color(0xFFE74C3C)),
                             shape = RoundedCornerShape(12.dp),
                             colors = ButtonDefaults.outlinedButtonColors(backgroundColor = Color.Transparent),
-                            modifier = Modifier.fillMaxWidth()
+                            modifier = Modifier.fillMaxWidth().height(46.dp)
                         ) {
                             Text("❌ Zrušit poptávku", color = Color(0xFFE74C3C), fontWeight = FontWeight.Black)
                         }
@@ -699,7 +767,7 @@ fun OrdersListView(
                                 onClick = { payConsentOrder = o },
                                 colors = ButtonDefaults.buttonColors(backgroundColor = Color(0xFF2ECC71)),
                                 shape = RoundedCornerShape(12.dp),
-                                modifier = Modifier.weight(1f)
+                                modifier = Modifier.weight(1f).height(46.dp)
                             ) {
                                 Text("💳 Zaplatit", color = Color.White, fontWeight = FontWeight.Black)
                             }
@@ -708,7 +776,7 @@ fun OrdersListView(
                                 border = BorderStroke(1.dp, Color(0xFFE74C3C)),
                                 shape = RoundedCornerShape(12.dp),
                                 colors = ButtonDefaults.outlinedButtonColors(backgroundColor = Color.Transparent),
-                                modifier = Modifier.weight(1f)
+                                modifier = Modifier.weight(1f).height(46.dp)
                             ) {
                                 Text("❌ Zrušit", color = Color(0xFFE74C3C), fontWeight = FontWeight.Black)
                             }
@@ -720,7 +788,7 @@ fun OrdersListView(
                             border = BorderStroke(1.dp, Color(0xFFE67E22)),
                             shape = RoundedCornerShape(12.dp),
                             colors = ButtonDefaults.outlinedButtonColors(backgroundColor = Color.Transparent),
-                            modifier = Modifier.fillMaxWidth()
+                            modifier = Modifier.fillMaxWidth().height(46.dp)
                         ) {
                             Text("⚠️ Požádat o storno jízdy", color = Color(0xFFE67E22), fontWeight = FontWeight.Black)
                         }
@@ -812,6 +880,7 @@ fun InvoicesView(
 
 @Composable
 fun AccountView(
+    isDark: Boolean,
     userProfile: UserProfile,
     onProfileReload: () -> Unit,
     onLogout: () -> Unit,
@@ -948,7 +1017,7 @@ fun AccountView(
                         backgroundColor = if (activeTab == "security") brandColor else cardBg
                     ),
                     shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier.weight(1f).height(48.dp)
                 ) {
                     Text(
                         "🔐 Bezpečnost",
@@ -963,7 +1032,7 @@ fun AccountView(
                         backgroundColor = if (activeTab == "address") brandColor else cardBg
                     ),
                     shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier.weight(1f).height(48.dp)
                 ) {
                     Text(
                         "📦 Fakturace",
@@ -984,12 +1053,12 @@ fun AccountView(
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     Text("Zobrazované jméno", color = textColor.copy(alpha = 0.8f), fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
-                    OutlinedTextField(
+                    WaterGlassInput(
                         value = nameInp,
                         onValueChange = { nameInp = it },
-                        colors = TextFieldDefaults.outlinedTextFieldColors(textColor = textColor, focusedBorderColor = brandColor, unfocusedBorderColor = borderColor),
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true
+                        placeholder = "Vaše jméno",
+                        isDark = isDark,
+                        brandColor = brandColor
                     )
                     Button(
                         onClick = {
@@ -1000,7 +1069,7 @@ fun AccountView(
                         },
                         colors = ButtonDefaults.buttonColors(backgroundColor = brandColor),
                         shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth().height(48.dp)
                     ) {
                         Text("💾 Uložit jméno", color = Color.Black, fontWeight = FontWeight.ExtraBold)
                     }
@@ -1016,13 +1085,15 @@ fun AccountView(
                 ) {
                     Text("Přihlašovací E-mail", color = textColor.copy(alpha = 0.8f), fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        OutlinedTextField(
+                        WaterGlassInput(
                             value = emailInp,
                             onValueChange = { emailInp = it },
+                            placeholder = "E-mail",
                             enabled = !emailOtpVisible,
-                            colors = TextFieldDefaults.outlinedTextFieldColors(textColor = textColor, focusedBorderColor = brandColor, unfocusedBorderColor = borderColor),
-                            modifier = Modifier.weight(1f),
-                            singleLine = true
+                            isDark = isDark,
+                            brandColor = brandColor,
+                            keyboardType = KeyboardType.Email,
+                            modifier = Modifier.weight(1f)
                         )
                         if (!emailOtpVisible) {
                             Button(
@@ -1034,20 +1105,22 @@ fun AccountView(
                                         } else statusMsg = msg
                                     }
                                 },
-                                colors = ButtonDefaults.buttonColors(backgroundColor = brandColor)
+                                colors = ButtonDefaults.buttonColors(backgroundColor = brandColor),
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.height(50.dp)
                             ) {
                                 Text("Změnit", color = Color.Black, fontWeight = FontWeight.Bold)
                             }
                         }
                     }
                     if (emailOtpVisible) {
-                        OutlinedTextField(
+                        WaterGlassInput(
                             value = emailOtpCode,
                             onValueChange = { emailOtpCode = it },
-                            placeholder = { Text("6místný kód z e-mailu", color = textColor.copy(alpha = 0.5f)) },
-                            colors = TextFieldDefaults.outlinedTextFieldColors(textColor = textColor, focusedBorderColor = brandColor, unfocusedBorderColor = borderColor),
-                            modifier = Modifier.fillMaxWidth(),
-                            singleLine = true
+                            placeholder = "6místný kód z e-mailu",
+                            isDark = isDark,
+                            brandColor = brandColor,
+                            keyboardType = KeyboardType.Number
                         )
                         Button(
                             onClick = {
@@ -1060,7 +1133,8 @@ fun AccountView(
                                 }
                             },
                             colors = ButtonDefaults.buttonColors(backgroundColor = brandColor),
-                            modifier = Modifier.fillMaxWidth()
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth().height(48.dp)
                         ) {
                             Text("Ověřit a změnit e-mail", color = Color.Black, fontWeight = FontWeight.ExtraBold)
                         }
@@ -1077,13 +1151,15 @@ fun AccountView(
                 ) {
                     Text("Ověřený Telefon", color = textColor.copy(alpha = 0.8f), fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        OutlinedTextField(
+                        WaterGlassInput(
                             value = phoneInp,
                             onValueChange = { phoneInp = it },
+                            placeholder = "+420...",
                             enabled = !phoneOtpVisible,
-                            colors = TextFieldDefaults.outlinedTextFieldColors(textColor = textColor, focusedBorderColor = brandColor, unfocusedBorderColor = borderColor),
-                            modifier = Modifier.weight(1f),
-                            singleLine = true
+                            isDark = isDark,
+                            brandColor = brandColor,
+                            keyboardType = KeyboardType.Phone,
+                            modifier = Modifier.weight(1f)
                         )
                         if (!phoneOtpVisible) {
                             Button(
@@ -1095,20 +1171,22 @@ fun AccountView(
                                         } else statusMsg = msg
                                     }
                                 },
-                                colors = ButtonDefaults.buttonColors(backgroundColor = brandColor)
+                                colors = ButtonDefaults.buttonColors(backgroundColor = brandColor),
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.height(50.dp)
                             ) {
                                 Text("Změnit", color = Color.Black, fontWeight = FontWeight.Bold)
                             }
                         }
                     }
                     if (phoneOtpVisible) {
-                        OutlinedTextField(
+                        WaterGlassInput(
                             value = phoneOtpCode,
                             onValueChange = { phoneOtpCode = it },
-                            placeholder = { Text("6místný kód ze SMS", color = textColor.copy(alpha = 0.5f)) },
-                            colors = TextFieldDefaults.outlinedTextFieldColors(textColor = textColor, focusedBorderColor = brandColor, unfocusedBorderColor = borderColor),
-                            modifier = Modifier.fillMaxWidth(),
-                            singleLine = true
+                            placeholder = "6místný kód ze SMS",
+                            isDark = isDark,
+                            brandColor = brandColor,
+                            keyboardType = KeyboardType.Number
                         )
                         Button(
                             onClick = {
@@ -1121,7 +1199,8 @@ fun AccountView(
                                 }
                             },
                             colors = ButtonDefaults.buttonColors(backgroundColor = brandColor),
-                            modifier = Modifier.fillMaxWidth()
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth().height(48.dp)
                         ) {
                             Text("Ověřit a změnit telefon", color = Color.Black, fontWeight = FontWeight.ExtraBold)
                         }
@@ -1137,23 +1216,21 @@ fun AccountView(
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     Text("Změna hesla", color = textColor.copy(alpha = 0.8f), fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
-                    OutlinedTextField(
+                    WaterGlassInput(
                         value = oldPass,
                         onValueChange = { oldPass = it },
-                        placeholder = { Text("Současné heslo", color = textColor.copy(alpha = 0.5f)) },
-                        visualTransformation = PasswordVisualTransformation(),
-                        colors = TextFieldDefaults.outlinedTextFieldColors(textColor = textColor, focusedBorderColor = brandColor, unfocusedBorderColor = borderColor),
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true
+                        placeholder = "Současné heslo",
+                        isDark = isDark,
+                        brandColor = brandColor,
+                        isPassword = true
                     )
-                    OutlinedTextField(
+                    WaterGlassInput(
                         value = newPass,
                         onValueChange = { newPass = it },
-                        placeholder = { Text("Nové heslo (min. 8 znaků)", color = textColor.copy(alpha = 0.5f)) },
-                        visualTransformation = PasswordVisualTransformation(),
-                        colors = TextFieldDefaults.outlinedTextFieldColors(textColor = textColor, focusedBorderColor = brandColor, unfocusedBorderColor = borderColor),
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true
+                        placeholder = "Nové heslo (min. 8 znaků)",
+                        isDark = isDark,
+                        brandColor = brandColor,
+                        isPassword = true
                     )
                     Button(
                         onClick = {
@@ -1167,7 +1244,7 @@ fun AccountView(
                         },
                         colors = ButtonDefaults.buttonColors(backgroundColor = brandColor),
                         shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth().height(48.dp)
                     ) {
                         Text("💾 Změnit heslo", color = Color.Black, fontWeight = FontWeight.ExtraBold)
                     }
@@ -1187,6 +1264,7 @@ fun AccountView(
                             colors = ButtonDefaults.buttonColors(
                                 backgroundColor = if (billingSubTab == "citizen") brandColor else Color.Transparent
                             ),
+                            shape = RoundedCornerShape(10.dp),
                             modifier = Modifier.weight(1f)
                         ) {
                             Text("👤 Občan", color = if (billingSubTab == "citizen") Color.Black else textColor, fontWeight = FontWeight.Bold)
@@ -1196,6 +1274,7 @@ fun AccountView(
                             colors = ButtonDefaults.buttonColors(
                                 backgroundColor = if (billingSubTab == "company") brandColor else Color.Transparent
                             ),
+                            shape = RoundedCornerShape(10.dp),
                             modifier = Modifier.weight(1f)
                         ) {
                             Text("🏢 Firma", color = if (billingSubTab == "company") Color.Black else textColor, fontWeight = FontWeight.Bold)
@@ -1203,45 +1282,29 @@ fun AccountView(
                     }
 
                     if (billingSubTab == "citizen") {
-                        OutlinedTextField(
-                            value = cFn, onValueChange = { cFn = it },
-                            label = { Text("Fakturační jméno", color = textColor.copy(alpha = 0.7f)) },
-                            colors = TextFieldDefaults.outlinedTextFieldColors(textColor = textColor, focusedBorderColor = brandColor, unfocusedBorderColor = borderColor),
-                            modifier = Modifier.fillMaxWidth(), singleLine = true
-                        )
-                        OutlinedTextField(
-                            value = cLn, onValueChange = { cLn = it },
-                            label = { Text("Fakturační příjmení", color = textColor.copy(alpha = 0.7f)) },
-                            colors = TextFieldDefaults.outlinedTextFieldColors(textColor = textColor, focusedBorderColor = brandColor, unfocusedBorderColor = borderColor),
-                            modifier = Modifier.fillMaxWidth(), singleLine = true
-                        )
+                        Text("Fakturační jméno", color = textColor.copy(alpha = 0.8f), fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
+                        WaterGlassInput(value = cFn, onValueChange = { cFn = it }, placeholder = "Jméno", isDark = isDark, brandColor = brandColor)
+                        Text("Fakturační příjmení", color = textColor.copy(alpha = 0.8f), fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
+                        WaterGlassInput(value = cLn, onValueChange = { cLn = it }, placeholder = "Příjmení", isDark = isDark, brandColor = brandColor)
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedTextField(
-                                value = cStreet, onValueChange = { cStreet = it },
-                                label = { Text("Ulice", color = textColor.copy(alpha = 0.7f)) },
-                                colors = TextFieldDefaults.outlinedTextFieldColors(textColor = textColor, focusedBorderColor = brandColor, unfocusedBorderColor = borderColor),
-                                modifier = Modifier.weight(2f), singleLine = true
-                            )
-                            OutlinedTextField(
-                                value = cNum, onValueChange = { cNum = it },
-                                label = { Text("Č.p.", color = textColor.copy(alpha = 0.7f)) },
-                                colors = TextFieldDefaults.outlinedTextFieldColors(textColor = textColor, focusedBorderColor = brandColor, unfocusedBorderColor = borderColor),
-                                modifier = Modifier.weight(1f), singleLine = true
-                            )
+                            Column(modifier = Modifier.weight(2f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text("Ulice", color = textColor.copy(alpha = 0.8f), fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
+                                WaterGlassInput(value = cStreet, onValueChange = { cStreet = it }, placeholder = "Ulice", isDark = isDark, brandColor = brandColor)
+                            }
+                            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text("Č.p.", color = textColor.copy(alpha = 0.8f), fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
+                                WaterGlassInput(value = cNum, onValueChange = { cNum = it }, placeholder = "Č.p.", isDark = isDark, brandColor = brandColor)
+                            }
                         }
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedTextField(
-                                value = cCity, onValueChange = { cCity = it },
-                                label = { Text("Město", color = textColor.copy(alpha = 0.7f)) },
-                                colors = TextFieldDefaults.outlinedTextFieldColors(textColor = textColor, focusedBorderColor = brandColor, unfocusedBorderColor = borderColor),
-                                modifier = Modifier.weight(2f), singleLine = true
-                            )
-                            OutlinedTextField(
-                                value = cZip, onValueChange = { cZip = it },
-                                label = { Text("PSČ", color = textColor.copy(alpha = 0.7f)) },
-                                colors = TextFieldDefaults.outlinedTextFieldColors(textColor = textColor, focusedBorderColor = brandColor, unfocusedBorderColor = borderColor),
-                                modifier = Modifier.weight(1f), singleLine = true
-                            )
+                            Column(modifier = Modifier.weight(2f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text("Město", color = textColor.copy(alpha = 0.8f), fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
+                                WaterGlassInput(value = cCity, onValueChange = { cCity = it }, placeholder = "Město", isDark = isDark, brandColor = brandColor)
+                            }
+                            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text("PSČ", color = textColor.copy(alpha = 0.8f), fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
+                                WaterGlassInput(value = cZip, onValueChange = { cZip = it }, placeholder = "PSČ", isDark = isDark, brandColor = brandColor)
+                            }
                         }
                         Button(
                             onClick = {
@@ -1251,18 +1314,21 @@ fun AccountView(
                             },
                             colors = ButtonDefaults.buttonColors(backgroundColor = brandColor),
                             shape = RoundedCornerShape(12.dp),
-                            modifier = Modifier.fillMaxWidth()
+                            modifier = Modifier.fillMaxWidth().height(48.dp)
                         ) {
                             Text("💾 Uložit adresu občana", color = Color.Black, fontWeight = FontWeight.ExtraBold)
                         }
                     } else {
+                        Text("IČO", color = textColor.copy(alpha = 0.8f), fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                            OutlinedTextField(
-                                value = fIco, onValueChange = { fIco = it },
-                                label = { Text("IČO (8 číslic)", color = textColor.copy(alpha = 0.7f)) },
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                colors = TextFieldDefaults.outlinedTextFieldColors(textColor = textColor, focusedBorderColor = brandColor, unfocusedBorderColor = borderColor),
-                                modifier = Modifier.weight(1f), singleLine = true
+                            WaterGlassInput(
+                                value = fIco,
+                                onValueChange = { fIco = it },
+                                placeholder = "8 číslic",
+                                isDark = isDark,
+                                brandColor = brandColor,
+                                keyboardType = KeyboardType.Number,
+                                modifier = Modifier.weight(1f)
                             )
                             Button(
                                 onClick = {
@@ -1278,7 +1344,9 @@ fun AccountView(
                                         }
                                     }
                                 },
-                                colors = ButtonDefaults.buttonColors(backgroundColor = brandColor)
+                                colors = ButtonDefaults.buttonColors(backgroundColor = brandColor),
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.height(50.dp)
                             ) {
                                 Text("🔎 ARES", color = Color.Black, fontWeight = FontWeight.ExtraBold)
                             }
@@ -1286,24 +1354,12 @@ fun AccountView(
                         if (aresMsg != null) {
                             Text(aresMsg!!, color = brandColor, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                         }
-                        OutlinedTextField(
-                            value = fName, onValueChange = { fName = it },
-                            label = { Text("Název firmy", color = textColor.copy(alpha = 0.7f)) },
-                            colors = TextFieldDefaults.outlinedTextFieldColors(textColor = textColor, focusedBorderColor = brandColor, unfocusedBorderColor = borderColor),
-                            modifier = Modifier.fillMaxWidth(), singleLine = true
-                        )
-                        OutlinedTextField(
-                            value = fDic, onValueChange = { fDic = it },
-                            label = { Text("DIČ", color = textColor.copy(alpha = 0.7f)) },
-                            colors = TextFieldDefaults.outlinedTextFieldColors(textColor = textColor, focusedBorderColor = brandColor, unfocusedBorderColor = borderColor),
-                            modifier = Modifier.fillMaxWidth(), singleLine = true
-                        )
-                        OutlinedTextField(
-                            value = fAddr, onValueChange = { fAddr = it },
-                            label = { Text("Fakturační adresa", color = textColor.copy(alpha = 0.7f)) },
-                            colors = TextFieldDefaults.outlinedTextFieldColors(textColor = textColor, focusedBorderColor = brandColor, unfocusedBorderColor = borderColor),
-                            modifier = Modifier.fillMaxWidth(), singleLine = true
-                        )
+                        Text("Název firmy", color = textColor.copy(alpha = 0.8f), fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
+                        WaterGlassInput(value = fName, onValueChange = { fName = it }, placeholder = "Název firmy", isDark = isDark, brandColor = brandColor)
+                        Text("DIČ", color = textColor.copy(alpha = 0.8f), fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
+                        WaterGlassInput(value = fDic, onValueChange = { fDic = it }, placeholder = "CZ...", isDark = isDark, brandColor = brandColor)
+                        Text("Fakturační adresa", color = textColor.copy(alpha = 0.8f), fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
+                        WaterGlassInput(value = fAddr, onValueChange = { fAddr = it }, placeholder = "Ulice, Město, PSČ", isDark = isDark, brandColor = brandColor)
                         Button(
                             onClick = {
                                 TaxiApi.saveBillingCompany(fIco, fName, fDic, fAddr) { _, msg ->
@@ -1312,7 +1368,7 @@ fun AccountView(
                             },
                             colors = ButtonDefaults.buttonColors(backgroundColor = brandColor),
                             shape = RoundedCornerShape(12.dp),
-                            modifier = Modifier.fillMaxWidth()
+                            modifier = Modifier.fillMaxWidth().height(48.dp)
                         ) {
                             Text("💾 Uložit firemní údaje", color = Color.Black, fontWeight = FontWeight.ExtraBold)
                         }
@@ -1325,7 +1381,7 @@ fun AccountView(
                 border = BorderStroke(1.dp, borderColor),
                 shape = RoundedCornerShape(12.dp),
                 colors = ButtonDefaults.outlinedButtonColors(backgroundColor = Color.Transparent),
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier.fillMaxWidth().height(48.dp)
             ) {
                 Text("← Zpět na přehled účtu", color = textColor, fontWeight = FontWeight.Bold)
             }
@@ -1370,7 +1426,7 @@ fun SettingsView(
                         border = BorderStroke(1.dp, if (selected) brandColor else borderColor),
                         shape = RoundedCornerShape(10.dp),
                         elevation = null,
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.weight(1f).height(44.dp)
                     ) {
                         Text(
                             label,
