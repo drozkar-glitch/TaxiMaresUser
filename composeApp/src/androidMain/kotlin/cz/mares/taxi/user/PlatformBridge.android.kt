@@ -7,6 +7,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.location.Location
 import android.location.LocationListener
@@ -72,6 +73,13 @@ actual object PlatformBridge {
     var mapboxToken: String = ""
         private set
 
+    @Volatile
+    var appNotifLargeBitmap: Bitmap? = null
+        private set
+
+    var taxiPinImageBitmap by mutableStateOf<ImageBitmap?>(null)
+        private set
+
     private val tokenLock = Any()
 
     fun init(activity: MainActivity) {
@@ -83,9 +91,50 @@ actual object PlatformBridge {
         mapboxToken = loadPref("mapbox_token", "")
         ioExecutor.execute {
             ensureMapboxTokenLoaded()
+            ensureBrandAssetsLoaded()
         }
         ensureNotificationChannel()
         startBackgroundInboxPoller()
+    }
+
+    private fun downloadBitmap(urlStr: String): Bitmap? {
+        var conn: HttpURLConnection? = null
+        return try {
+            val u = URL(urlStr)
+            conn = (u.openConnection() as HttpURLConnection).apply {
+                connectTimeout = 7000
+                readTimeout = 7000
+                setRequestProperty("User-Agent", "TaxiMaresApp/2.0")
+            }
+            if (conn.responseCode in 200..299) {
+                val bytes = conn.inputStream.use { it.readBytes() }
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            } else null
+        } catch (_: Exception) {
+            null
+        } finally {
+            conn?.disconnect()
+        }
+    }
+
+    private fun ensureBrandAssetsLoaded() {
+        if (appNotifLargeBitmap == null) {
+            val bmp = downloadBitmap("${TaxiApi.BASE_URL}/ikonka-192x192.png")
+                ?: downloadBitmap("${TaxiApi.BASE_URL}/taxi/img/ikonka-512x512.png")
+                ?: downloadBitmap("${TaxiApi.BASE_URL}/taxi/app/assets/images/taxi-point.png")
+            if (bmp != null) {
+                appNotifLargeBitmap = bmp
+            }
+        }
+        if (taxiPinImageBitmap == null) {
+            val pinBmp = downloadBitmap("${TaxiApi.BASE_URL}/taxi/app/assets/images/taxi-point.png")
+            if (pinBmp != null) {
+                val img = pinBmp.asImageBitmap()
+                mainHandler.post {
+                    taxiPinImageBitmap = img
+                }
+            }
+        }
     }
 
     fun ensureMapboxTokenLoaded(): String {
@@ -120,6 +169,18 @@ actual object PlatformBridge {
                 conn?.disconnect()
             }
             return mapboxToken
+        }
+    }
+
+    actual fun clearCacheAndReload(onDone: () -> Unit) {
+        tileBitmapsCache.clear()
+        synchronized(tileLoadingSet) { tileLoadingSet.clear() }
+        savePref("mapbox_token", "")
+        mapboxToken = ""
+        ioExecutor.execute {
+            ensureMapboxTokenLoaded()
+            ensureBrandAssetsLoaded()
+            mainHandler.post { onDone() }
         }
     }
 
@@ -183,43 +244,53 @@ actual object PlatformBridge {
     actual fun showSystemNotification(id: String, title: String, body: String, actionUrl: String) {
         val ctx = appContext ?: return
         ensureNotificationChannel()
-        try {
-            val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            val intent = Intent(ctx, MainActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
-                putExtra("taxi_action_url", actionUrl)
+        ioExecutor.execute {
+            if (appNotifLargeBitmap == null) {
+                ensureBrandAssetsLoaded()
             }
-            val pendingFlags = if (Build.VERSION.SDK_INT >= 23) {
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            } else {
-                PendingIntent.FLAG_UPDATE_CURRENT
-            }
-            val notifId = id.hashCode()
-            val pendingIntent = PendingIntent.getActivity(ctx, notifId, intent, pendingFlags)
+            try {
+                val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                val intent = Intent(ctx, MainActivity::class.java).apply {
+                    flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                    putExtra("taxi_action_url", actionUrl)
+                }
+                val pendingFlags = if (Build.VERSION.SDK_INT >= 23) {
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                } else {
+                    PendingIntent.FLAG_UPDATE_CURRENT
+                }
+                val notifId = id.hashCode()
+                val pendingIntent = PendingIntent.getActivity(ctx, notifId, intent, pendingFlags)
 
-            val builder = if (Build.VERSION.SDK_INT >= 26) {
-                Notification.Builder(ctx, CHANNEL_ID)
-            } else {
-                @Suppress("DEPRECATION")
-                Notification.Builder(ctx)
-            }
+                val builder = if (Build.VERSION.SDK_INT >= 26) {
+                    Notification.Builder(ctx, CHANNEL_ID)
+                } else {
+                    @Suppress("DEPRECATION")
+                    Notification.Builder(ctx)
+                }
 
-            builder.setSmallIcon(R.drawable.ic_launcher)
-                .setContentTitle(title)
-                .setContentText(body)
-                .setStyle(Notification.BigTextStyle().bigText(body))
-                .setAutoCancel(true)
-                .setContentIntent(pendingIntent)
+                builder.setSmallIcon(R.drawable.ic_stat_taxi)
+                    .setColor(0xFFFFCC00.toInt())
+                    .setContentTitle(title)
+                    .setContentText(body)
+                    .setStyle(Notification.BigTextStyle().bigText(body))
+                    .setAutoCancel(true)
+                    .setContentIntent(pendingIntent)
 
-            if (Build.VERSION.SDK_INT < 26) {
-                @Suppress("DEPRECATION")
-                builder.setPriority(Notification.PRIORITY_HIGH)
-                @Suppress("DEPRECATION")
-                builder.setDefaults(Notification.DEFAULT_ALL)
-            }
+                appNotifLargeBitmap?.let { bmp ->
+                    builder.setLargeIcon(bmp)
+                }
 
-            nm.notify(notifId, builder.build())
-        } catch (_: Exception) {}
+                if (Build.VERSION.SDK_INT < 26) {
+                    @Suppress("DEPRECATION")
+                    builder.setPriority(Notification.PRIORITY_HIGH)
+                    @Suppress("DEPRECATION")
+                    builder.setDefaults(Notification.DEFAULT_ALL)
+                }
+
+                nm.notify(notifId, builder.build())
+            } catch (_: Exception) {}
+        }
     }
 
     private fun startBackgroundInboxPoller() {
@@ -534,6 +605,7 @@ actual fun InteractiveTaxiMap(
     var zoom by remember { mutableStateOf(14) }
     var centerLat by remember { mutableStateOf(50.4222208) }
     var centerLon by remember { mutableStateOf(14.2540608) }
+    val pinImg = PlatformBridge.taxiPinImageBitmap
 
     LaunchedEffect(flyToTarget) {
         if (flyToTarget != null) {
@@ -577,7 +649,7 @@ actual fun InteractiveTaxiMap(
         Canvas(
             modifier = Modifier
                 .fillMaxSize()
-                .pointerInput(zoom) {
+                .pointerInput(zoom, isDark) {
                     val tilePx = 256.dp.toPx()
                     detectTransformGestures { _, pan, gestureZoom, _ ->
                         val cTileX = lonToTileX(centerLon, zoom) - (pan.x / tilePx)
@@ -649,25 +721,33 @@ actual fun InteractiveTaxiMap(
                 )
             }
 
+            val pinSizePx = 34.dp.toPx().roundToInt()
+
+            fun drawTaxiPin(pos: Offset, fallbackColor: Color) {
+                if (pinImg != null) {
+                    drawImage(
+                        image = pinImg,
+                        dstOffset = IntOffset((pos.x - pinSizePx / 2f).roundToInt(), (pos.y - pinSizePx).roundToInt()),
+                        dstSize = IntSize(pinSizePx, pinSizePx)
+                    )
+                } else {
+                    drawCircle(color = Color.Black, radius = 11.dp.toPx(), center = pos)
+                    drawCircle(color = fallbackColor, radius = 8.5.dp.toPx(), center = pos)
+                    drawCircle(color = Color.Black, radius = 3.5.dp.toPx(), center = pos)
+                }
+            }
+
             startPoint?.let { sp ->
-                val pos = toScreen(sp.lat, sp.lon)
-                drawCircle(color = Color.Black, radius = 11.dp.toPx(), center = pos)
-                drawCircle(color = Color(0xFF2ECC71), radius = 8.5.dp.toPx(), center = pos)
-                drawCircle(color = Color.White, radius = 3.5.dp.toPx(), center = pos)
+                drawTaxiPin(toScreen(sp.lat, sp.lon), Color(0xFF2ECC71))
             }
 
             destPoint?.let { dp ->
-                val pos = toScreen(dp.lat, dp.lon)
-                drawCircle(color = Color.Black, radius = 11.dp.toPx(), center = pos)
-                drawCircle(color = Color(0xFFFFCC00), radius = 8.5.dp.toPx(), center = pos)
-                drawCircle(color = Color.Black, radius = 3.5.dp.toPx(), center = pos)
+                drawTaxiPin(toScreen(dp.lat, dp.lon), Color(0xFFFFCC00))
             }
 
             trackingData?.takeIf { it.ok && it.lat != 0.0 && it.lon != 0.0 }?.let { td ->
                 if (td.targetLat != 0.0 && td.targetLon != 0.0) {
-                    val tPos = toScreen(td.targetLat, td.targetLon)
-                    drawCircle(color = Color.Black, radius = 10.dp.toPx(), center = tPos)
-                    drawCircle(color = Color(0xFFFFCC00), radius = 7.dp.toPx(), center = tPos)
+                    drawTaxiPin(toScreen(td.targetLat, td.targetLon), Color(0xFFFFCC00))
                 }
                 val carPos = toScreen(td.lat, td.lon)
                 drawCircle(color = Color.Black.copy(alpha = 0.65f), radius = 14.dp.toPx(), center = carPos)

@@ -29,8 +29,13 @@ enum class SheetStop {
 @Composable
 fun App() {
     var token by remember { mutableStateOf(PlatformBridge.loadPref("taxi_api_token")) }
-    var themePref by remember { mutableStateOf(PlatformBridge.loadPref("taxi_theme", "dark")) }
-    val isDark = themePref != "light"
+    var themePref by remember { mutableStateOf(PlatformBridge.loadPref("taxi_theme", "auto")) }
+    val systemDark = isSystemInDarkTheme()
+    val isDark = when (themePref) {
+        "dark" -> true
+        "light" -> false
+        else -> systemDark
+    }
 
     // WATER GLASS BAREVNÁ PALETA PŘESNĚ PODLE STYLE.CSS
     val bgColor = if (isDark) Color(0xFF0A0A0D) else Color(0xFFF5F6F8)
@@ -59,7 +64,7 @@ fun App() {
 
     var rideTerm by remember { mutableStateOf("") }
     var minDriverWaitMin by remember { mutableStateOf(15) }
-    var personsStr by remember { mutableStateOf("1") }
+    var personsStr by remember { mutableStateOf("") }
     var waitMinStr by remember { mutableStateOf("0") }
     var hasChildren by remember { mutableStateOf(false) }
     var boosterSeatsStr by remember { mutableStateOf("0") }
@@ -107,8 +112,8 @@ fun App() {
             } else {
                 activeView = openMatch
                 barTitle = when (openMatch) {
-                    "orders" -> "🚕 Moje objednávky"
-                    "requests" -> "⏳ Moje poptávky"
+                    "orders" -> "Historie jízd"
+                    "requests" -> "Moje poptávky"
                     "invoices" -> "Moje doklady"
                     "inbox" -> "Doručená pošta"
                     else -> "Taxi Mareš"
@@ -122,7 +127,6 @@ fun App() {
         }
     }
 
-    // Pravidelná kontrola stavu oprávnění, prokliků z notifikací a počtu nepřečtených zpráv
     LaunchedEffect(token) {
         if (token.isNotBlank()) {
             TaxiApi.fetchUserProfile { prof ->
@@ -146,7 +150,6 @@ fun App() {
         }
     }
 
-    // Pravidelná obnova živého sledování vozu (každé 3 sekundy)
     LaunchedEffect(activeTrackingToken) {
         while (activeTrackingToken != null) {
             val tk = activeTrackingToken ?: break
@@ -169,11 +172,11 @@ fun App() {
         }
     }
 
+    // PŘESNÁ LOGIKA PODLE CALC.JS: Po spočítání trasy a ceny sjede panel na MID, jinak zůstává MAX
     fun triggerRouteRecalculation() {
         val s = startPoint
         val d = destPoint
         if (s != null && d != null) {
-            sheetStop = SheetStop.MAX
             isCalculatingRoute = true
             routeError = null
             val pts = mutableListOf(s)
@@ -184,7 +187,7 @@ fun App() {
             TaxiApi.calculateRouteAndPrice(
                 waypoints = pts,
                 routeType = routeType,
-                persons = personsStr.toIntOrNull() ?: 1,
+                persons = personsStr.toIntOrNull() ?: 0,
                 waitMinutes = waitMinStr.toIntOrNull() ?: 0,
                 hasChildren = hasChildren,
                 boosterSeats = boosterSeatsStr.toIntOrNull() ?: 0,
@@ -197,20 +200,32 @@ fun App() {
                 res.onSuccess { pr ->
                     pricingResult = pr
                     barTitle = "Odhad: ${pr.totalKc} Kč"
+                    sheetStop = SheetStop.MID
                 }.onFailure {
-                    routeError = "Trasování selhalo. Zkuste prosím body upravit."
+                    routeError = "Trasování selhalo. Zkuste prosím body posunout."
                 }
             }
         } else {
             pricingResult = null
             routeError = null
-            if (activeView == "order") {
-                sheetStop = SheetStop.MID
+            if (s == null && activeView == "order") {
+                barTitle = "Nová objednávka"
             }
         }
     }
 
+    // PŘESNÁ LOGIKA PODLE CALC.JS A SHEET.JS: Zavření pohledu vyčistí rozpracovanou trasu a vrátí panel do MID
     fun closeToHome() {
+        if (activeView == "order") {
+            startPoint = null
+            via1Point = null
+            via2Point = null
+            destPoint = null
+            showVia1 = false
+            showVia2 = false
+            pricingResult = null
+            routeError = null
+        }
         activeView = "home"
         sheetStop = SheetStop.MID
         mapPickTargetField = null
@@ -249,7 +264,7 @@ fun App() {
                     }
                 )
             } else {
-                // 1. INTERAKTIVNÍ MAPA NA POZADÍ
+                // 1. INTERAKTIVNÍ MAPBOX MAPA NA POZADÍ
                 InteractiveTaxiMap(
                     isDark = isDark,
                     routePoints = trackingData?.routePoints?.takeIf { it.isNotEmpty() }
@@ -303,11 +318,11 @@ fun App() {
                     }
                 }
 
-                // 3. UBER-STYLE PLOVOUCÍ ŠPENDLÍK PŘI VÝBĚRU Z MAPY
+                // 3. UBER-STYLE PLOVOUCÍ ŠPENDLÍK PŘI VÝBĚRU Z MAPY PODLE ADDRESSFIELD.JS
                 if (mapPickTargetField != null) {
                     Box(modifier = Modifier.fillMaxSize()) {
                         Column(
-                            modifier = Modifier.align(Alignment.Center).offset(y = (-20).dp),
+                            modifier = Modifier.align(Alignment.Center).offset(y = (-21).dp),
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
                             Box(
@@ -339,7 +354,7 @@ fun App() {
                             Column(
                                 modifier = Modifier.padding(20.dp),
                                 horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.spacedBy(12.dp)
+                                verticalArrangement = Arrangement.spacedBy(14.dp)
                             ) {
                                 Text(
                                     "POSUŇTE MAPU POD ŠPENDLÍK",
@@ -352,17 +367,24 @@ fun App() {
                                         val targetField = mapPickTargetField
                                         val (lat, lon) = mapCenterCoords
                                         mapPickTargetField = null
+                                        sheetStop = SheetStop.MAX
                                         TaxiApi.reverseGeocode(lat, lon) { label ->
                                             val pt = GeoPoint(lat, lon, label)
                                             when (targetField) {
                                                 "start" -> {
                                                     startPoint = pt
+                                                    if (destPoint == null) {
+                                                        barTitle = "Hledám nejbližší vůz... ⏳"
+                                                    }
                                                     TaxiApi.fetchNearestDriverEta(lat, lon) { wait ->
                                                         if (wait != null) {
                                                             minDriverWaitMin = wait
                                                             if (destPoint == null) {
                                                                 barTitle = "🚕 Vůz u vás může být za $wait min"
                                                             }
+                                                        } else if (destPoint == null) {
+                                                            minDriverWaitMin = 45
+                                                            barTitle = "⚠️ Vozy jsou momentálně vytížené"
                                                         }
                                                     }
                                                 }
@@ -377,9 +399,12 @@ fun App() {
                                     shape = RoundedCornerShape(14.dp),
                                     modifier = Modifier.fillMaxWidth().height(54.dp)
                                 ) {
-                                    Text("Potvrdit tuto polohu", color = brandTextColor, fontWeight = FontWeight.Black, fontSize = 17.sp)
+                                    Text("Potvrdit tuto polohu", color = brandTextColor, fontWeight = FontWeight.Black, fontSize = 18.sp)
                                 }
-                                TextButton(onClick = { mapPickTargetField = null }) {
+                                TextButton(onClick = {
+                                    mapPickTargetField = null
+                                    sheetStop = SheetStop.MAX
+                                }) {
                                     Text("Zrušit výběr z mapy", color = textColor.copy(alpha = 0.7f))
                                 }
                             }
@@ -387,17 +412,17 @@ fun App() {
                     }
                 }
 
-                // 4. SMART GLASS SHEET (POLOPRŮHLEDNÝ SKLENĚNÝ PANEL NAD MAPOU)
+                // 4. SMART GLASS SHEET PŘESNĚ PODLE SHEET.JS (MIN = 80dp, MID = 290dp/50%, MAX = 90% výšky)
                 if (mapPickTargetField == null) {
                     val targetSheetHeight = when {
-                        activeTrackingToken != null && activeView == "home" -> 86.dp
-                        sheetStop == SheetStop.MIN -> 86.dp
-                        sheetStop == SheetStop.MID -> (screenHeight * 0.52f).coerceAtLeast(330.dp)
+                        activeTrackingToken != null && activeView == "home" -> 80.dp
+                        sheetStop == SheetStop.MIN -> 80.dp
+                        sheetStop == SheetStop.MID -> (screenHeight * 0.50f).coerceIn(290.dp, 420.dp)
                         else -> screenHeight * 0.90f
                     }
                     val animatedHeight by animateDpAsState(
                         targetValue = targetSheetHeight,
-                        animationSpec = tween(durationMillis = 280)
+                        animationSpec = tween(durationMillis = 300)
                     )
 
                     var dragAccum by remember { mutableStateOf(0f) }
@@ -412,6 +437,7 @@ fun App() {
                             .border(1.dp, borderColor, RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp))
                     ) {
                         Column(modifier = Modifier.fillMaxSize()) {
+                            // HORNÍ ÚCHYT A MAGICKÝ INFOBAR PODLE SHEET.JS
                             Box(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -424,9 +450,9 @@ fun App() {
                                                 dragAccum += dragAmount
                                             },
                                             onDragEnd = {
-                                                if (dragAccum < -40f) {
+                                                if (dragAccum < -35f) {
                                                     sheetStop = if (sheetStop == SheetStop.MIN) SheetStop.MID else SheetStop.MAX
-                                                } else if (dragAccum > 40f) {
+                                                } else if (dragAccum > 35f) {
                                                     sheetStop = if (sheetStop == SheetStop.MAX) SheetStop.MID else SheetStop.MIN
                                                 }
                                                 dragAccum = 0f
@@ -502,7 +528,7 @@ fun App() {
                                     }
 
                                     "order" -> {
-                                        TwoPhaseOrderCalculatorView(
+                                        OrderCalculatorView(
                                             isDark = isDark,
                                             routeType = routeType,
                                             onRouteTypeChange = {
@@ -514,6 +540,9 @@ fun App() {
                                                 startPoint = pt
                                                 if (pt != null) {
                                                     flyToCoords = Pair(pt.lat, pt.lon)
+                                                    if (destPoint == null) {
+                                                        barTitle = "Hledám nejbližší vůz... ⏳"
+                                                    }
                                                     TaxiApi.fetchNearestDriverEta(pt.lat, pt.lon) { wait ->
                                                         if (wait != null) {
                                                             minDriverWaitMin = wait
@@ -521,6 +550,7 @@ fun App() {
                                                                 barTitle = "🚕 Vůz u vás může být za $wait min"
                                                             }
                                                         } else if (destPoint == null) {
+                                                            minDriverWaitMin = 45
                                                             barTitle = "⚠️ Vozy jsou momentálně vytížené"
                                                         }
                                                     }
@@ -552,7 +582,7 @@ fun App() {
                                             onPickFromMapRequest = { fieldKey ->
                                                 mapPickTargetField = fieldKey
                                             },
-                                            onTypingExpandSheet = {
+                                            onExpandSheet = {
                                                 sheetStop = SheetStop.MAX
                                             },
                                             flightNumber = flightNumber,
@@ -622,7 +652,7 @@ fun App() {
                                                         start = s,
                                                         dest = d,
                                                         via = vias,
-                                                        persons = personsStr.toIntOrNull() ?: 1,
+                                                        persons = personsStr.toIntOrNull() ?: 0,
                                                         waitMinutes = waitMinStr.toIntOrNull() ?: 0,
                                                         hasChildren = hasChildren,
                                                         boosterSeats = boosterSeatsStr.toIntOrNull() ?: 0,
@@ -683,8 +713,8 @@ fun App() {
                                             onOpenView = { targetView ->
                                                 activeView = targetView
                                                 barTitle = when (targetView) {
-                                                    "orders" -> "🚕 Moje objednávky"
-                                                    "requests" -> "⏳ Moje poptávky"
+                                                    "orders" -> "Historie jízd"
+                                                    "requests" -> "Moje poptávky"
                                                     "invoices" -> "Moje doklady"
                                                     else -> "Taxi Mareš"
                                                 }
@@ -707,7 +737,7 @@ fun App() {
                                             onClearPreselectedPay = { preselectedPayOrderId = null },
                                             onEditAccountClick = {
                                                 activeView = "account"
-                                                barTitle = "👤 Můj účet"
+                                                barTitle = "Můj účet"
                                                 sheetStop = SheetStop.MAX
                                             },
                                             onOpenLegalModal = { url, title ->
@@ -757,10 +787,20 @@ fun App() {
                                                 themePref = newMode
                                                 PlatformBridge.savePref("taxi_theme", newMode)
                                             },
+                                            onForceUpdate = {
+                                                barTitle = "Aktualizuji apku..."
+                                                PlatformBridge.clearCacheAndReload {
+                                                    TaxiApi.fetchUserProfile { prof ->
+                                                        if (prof != null) userProfile = prof
+                                                        barTitle = "⚙️ Nastavení"
+                                                    }
+                                                }
+                                            },
                                             onOpenLegalModal = { url, title ->
                                                 webModalUrl = Pair(url, title)
                                             },
                                             brandColor = brandColor,
+                                            brandTextColor = brandTextColor,
                                             textColor = textColor,
                                             cardBg = cardBg,
                                             borderColor = borderColor
@@ -1013,13 +1053,14 @@ fun HomeMenuGrid(
                             .background(cardBg)
                             .border(1.dp, borderColor, RoundedCornerShape(18.dp))
                             .clickable {
+                                // PŘESNĚ PODLE SHEET.JS (openView -> snapToMax pro všechny pohledy)
                                 when (key) {
                                     "dispatch" -> PlatformBridge.dialPhone("+420606420002")
-                                    "order" -> onSelectView("order", "Nová objednávka", SheetStop.MID)
+                                    "order" -> onSelectView("order", "Nová objednávka", SheetStop.MAX)
                                     "inbox" -> onSelectView("inbox", "Doručená pošta", SheetStop.MAX)
-                                    "requests" -> onSelectView("requests", "⏳ Moje poptávky", SheetStop.MAX)
-                                    "orders" -> onSelectView("orders", "🚕 Moje objednávky", SheetStop.MAX)
-                                    "account" -> onSelectView("account", "👤 Můj účet", SheetStop.MAX)
+                                    "requests" -> onSelectView("requests", "Moje poptávky", SheetStop.MAX)
+                                    "orders" -> onSelectView("orders", "Historie jízd", SheetStop.MAX)
+                                    "account" -> onSelectView("account", "Můj účet", SheetStop.MAX)
                                     "settings" -> onSelectView("settings", "⚙️ Nastavení", SheetStop.MAX)
                                     "invoices" -> onSelectView("invoices", "Moje doklady", SheetStop.MAX)
                                 }
@@ -1061,7 +1102,7 @@ fun HomeMenuGrid(
 }
 
 @Composable
-fun TwoPhaseOrderCalculatorView(
+fun OrderCalculatorView(
     isDark: Boolean,
     routeType: String,
     onRouteTypeChange: (String) -> Unit,
@@ -1078,7 +1119,7 @@ fun TwoPhaseOrderCalculatorView(
     showVia2: Boolean,
     onShowVia2Change: (Boolean) -> Unit,
     onPickFromMapRequest: (String) -> Unit,
-    onTypingExpandSheet: () -> Unit,
+    onExpandSheet: () -> Unit,
     flightNumber: String,
     onFlightNumberChange: (String) -> Unit,
     flightDate: String,
@@ -1111,8 +1152,6 @@ fun TwoPhaseOrderCalculatorView(
     borderColor: Color,
     onProceedToReview: () -> Unit
 ) {
-    val isPhaseTwoUnlocked = startPoint != null && destPoint != null
-
     val isAirportPickup = remember(startPoint) {
         val low = startPoint?.label?.lowercase() ?: ""
         low.contains("terminál 1") || low.contains("terminál 2") || low.contains("letiště václava havla")
@@ -1125,6 +1164,7 @@ fun TwoPhaseOrderCalculatorView(
             .padding(bottom = 32.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        // PŘEPÍNAČ TRASY PODLE CALC.JS
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1157,6 +1197,7 @@ fun TwoPhaseOrderCalculatorView(
             }
         }
 
+        // ADRESNÍ POLE START
         NativeAddressField(
             isDark = isDark,
             icon = "🟢",
@@ -1164,13 +1205,14 @@ fun TwoPhaseOrderCalculatorView(
             point = startPoint,
             onPointSelected = onStartPointChange,
             onPickFromMap = { onPickFromMapRequest("start") },
-            onTypingStart = onTypingExpandSheet,
+            onFocusExpand = onExpandSheet,
             brandColor = brandColor,
             textColor = textColor,
             solidCardBg = solidCardBg,
             borderColor = borderColor
         )
 
+        // DETEKCE LETIŠTĚ PODLE CALC.JS
         AnimatedVisibility(visible = isAirportPickup) {
             Column(
                 modifier = Modifier
@@ -1191,7 +1233,7 @@ fun TwoPhaseOrderCalculatorView(
                     WaterGlassInput(
                         value = flightNumber,
                         onValueChange = { onFlightNumberChange(it.uppercase()) },
-                        placeholder = "Let (QS1234)",
+                        placeholder = "Číslo letu (např. QS1234)",
                         isDark = isDark,
                         brandColor = brandColor,
                         modifier = Modifier.weight(1f)
@@ -1219,7 +1261,7 @@ fun TwoPhaseOrderCalculatorView(
                     if (pt == null) onShowVia1Change(false)
                 },
                 onPickFromMap = { onPickFromMapRequest("via1") },
-                onTypingStart = onTypingExpandSheet,
+                onFocusExpand = onExpandSheet,
                 brandColor = brandColor,
                 textColor = textColor,
                 solidCardBg = solidCardBg,
@@ -1238,7 +1280,7 @@ fun TwoPhaseOrderCalculatorView(
                     if (pt == null) onShowVia2Change(false)
                 },
                 onPickFromMap = { onPickFromMapRequest("via2") },
-                onTypingStart = onTypingExpandSheet,
+                onFocusExpand = onExpandSheet,
                 brandColor = brandColor,
                 textColor = textColor,
                 solidCardBg = solidCardBg,
@@ -1247,7 +1289,7 @@ fun TwoPhaseOrderCalculatorView(
         }
 
         if (!showVia1 || !showVia2) {
-            Row(modifier = Modifier.fillMaxWidth().padding(start = 8.dp)) {
+            Row(modifier = Modifier.fillMaxWidth().padding(start = 14.dp)) {
                 OutlinedButton(
                     onClick = {
                         if (!showVia1) onShowVia1Change(true)
@@ -1262,6 +1304,7 @@ fun TwoPhaseOrderCalculatorView(
             }
         }
 
+        // ADRESNÍ POLE CÍL
         NativeAddressField(
             isDark = isDark,
             icon = "🏁",
@@ -1269,73 +1312,112 @@ fun TwoPhaseOrderCalculatorView(
             point = destPoint,
             onPointSelected = onDestPointChange,
             onPickFromMap = { onPickFromMapRequest("dest") },
-            onTypingStart = onTypingExpandSheet,
+            onFocusExpand = onExpandSheet,
             brandColor = brandColor,
             textColor = textColor,
             solidCardBg = solidCardBg,
             borderColor = borderColor
         )
 
-        AnimatedVisibility(visible = isPhaseTwoUnlocked) {
-            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(cardBg, RoundedCornerShape(16.dp))
-                        .border(1.dp, borderColor, RoundedCornerShape(16.dp))
-                        .padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
+        // OPTIONS-WRAP PŘESNĚ PODLE CALC.JS (SOUČÁST JEDNOTNÉHO FORMULÁŘE)
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(cardBg, RoundedCornerShape(16.dp))
+                .border(1.dp, borderColor, RoundedCornerShape(16.dp))
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    "TERMÍN ODJEZDU / PŘISTAVENÍ",
+                    color = textColor.copy(alpha = 0.6f),
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.ExtraBold
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text(
-                            "TERMÍN ODJEZDU / PŘISTAVENÍ",
-                            color = textColor.copy(alpha = 0.6f),
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.ExtraBold
-                        )
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            WaterGlassInput(
-                                value = rideTerm,
-                                onValueChange = onRideTermChange,
-                                placeholder = "Co nejdříve (ASAP)",
-                                isDark = isDark,
-                                brandColor = brandColor,
-                                modifier = Modifier.weight(1f)
-                            )
-                            Button(
-                                onClick = onAsapClick,
-                                colors = ButtonDefaults.buttonColors(backgroundColor = cardBg),
-                                border = BorderStroke(1.dp, borderColor),
-                                shape = RoundedCornerShape(12.dp),
-                                elevation = null,
-                                modifier = Modifier.height(50.dp)
-                            ) {
-                                Text("Co nejdřív", color = textColor, fontWeight = FontWeight.ExtraBold, fontSize = 13.sp)
-                            }
-                        }
+                    WaterGlassInput(
+                        value = rideTerm,
+                        onValueChange = onRideTermChange,
+                        placeholder = "Co nejdříve (ASAP)",
+                        isDark = isDark,
+                        brandColor = brandColor,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Button(
+                        onClick = onAsapClick,
+                        colors = ButtonDefaults.buttonColors(backgroundColor = cardBg),
+                        border = BorderStroke(1.dp, borderColor),
+                        shape = RoundedCornerShape(10.dp),
+                        elevation = null,
+                        modifier = Modifier.height(50.dp)
+                    ) {
+                        Text("Co nejdřív", color = textColor, fontWeight = FontWeight.ExtraBold, fontSize = 13.sp)
                     }
+                }
+            }
 
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("POČET OSOB", color = textColor.copy(alpha = 0.6f), fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
+                    WaterGlassInput(
+                        value = personsStr,
+                        onValueChange = { onPersonsChange(it.filter { c -> c.isDigit() }) },
+                        placeholder = "Např. 4",
+                        isDark = isDark,
+                        brandColor = brandColor,
+                        keyboardType = KeyboardType.Number
+                    )
+                }
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("ČEKÁNÍ (MIN)", color = textColor.copy(alpha = 0.6f), fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
+                    WaterGlassInput(
+                        value = waitMinStr,
+                        onValueChange = { onWaitMinChange(it.filter { c -> c.isDigit() }) },
+                        placeholder = "0",
+                        isDark = isDark,
+                        brandColor = brandColor,
+                        keyboardType = KeyboardType.Number
+                    )
+                }
+            }
+
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth().clickable { onHasChildrenChange(!hasChildren) }
+                ) {
+                    Checkbox(
+                        checked = hasChildren,
+                        onCheckedChange = onHasChildrenChange,
+                        colors = CheckboxDefaults.colors(checkedColor = brandColor)
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text("Z toho děti (do 150cm / 36kg)", color = textColor, fontWeight = FontWeight.ExtraBold, fontSize = 14.sp)
+                }
+
+                if (hasChildren) {
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Text("POČET OSOB", color = textColor.copy(alpha = 0.6f), fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
+                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text("PODSEDÁK", color = textColor.copy(alpha = 0.6f), fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
                             WaterGlassInput(
-                                value = personsStr,
-                                onValueChange = { onPersonsChange(it.filter { c -> c.isDigit() }) },
-                                placeholder = "Např. 4",
+                                value = boosterSeatsStr,
+                                onValueChange = { onBoosterSeatsChange(it.filter { c -> c.isDigit() }) },
+                                placeholder = "0",
                                 isDark = isDark,
                                 brandColor = brandColor,
                                 keyboardType = KeyboardType.Number
                             )
                         }
-                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Text("ČEKÁNÍ (MIN)", color = textColor.copy(alpha = 0.6f), fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
+                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text("AUTOSEDAČKA", color = textColor.copy(alpha = 0.6f), fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
                             WaterGlassInput(
-                                value = waitMinStr,
-                                onValueChange = { onWaitMinChange(it.filter { c -> c.isDigit() }) },
+                                value = childSeatsStr,
+                                onValueChange = { onChildSeatsChange(it.filter { c -> c.isDigit() }) },
                                 placeholder = "0",
                                 isDark = isDark,
                                 brandColor = brandColor,
@@ -1343,133 +1425,96 @@ fun TwoPhaseOrderCalculatorView(
                             )
                         }
                     }
+                }
+            }
 
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.fillMaxWidth().clickable { onHasChildrenChange(!hasChildren) }
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().clickable { onEscortChange(!escort) }
+            ) {
+                Checkbox(
+                    checked = escort,
+                    onCheckedChange = onEscortChange,
+                    colors = CheckboxDefaults.colors(checkedColor = brandColor)
+                )
+                Spacer(Modifier.width(6.dp))
+                Text("Odvoz vozu (Escort)", color = textColor, fontWeight = FontWeight.ExtraBold, fontSize = 14.sp)
+            }
+
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("VOZIDLA", color = textColor.copy(alpha = 0.6f), fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf(
+                        "auto" to "Automaticky",
+                        "1" to "1 vůz",
+                        "2" to "2 vozy",
+                        "3" to "3 vozy"
+                    ).forEach { (vMode, vLabel) ->
+                        val active = vehiclesMode == vMode
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(if (active) brandColor else Color.Transparent)
+                                .border(1.dp, if (active) brandColor else borderColor, RoundedCornerShape(10.dp))
+                                .clickable { onVehiclesModeChange(vMode) }
+                                .padding(vertical = 11.dp),
+                            contentAlignment = Alignment.Center
                         ) {
-                            Checkbox(
-                                checked = hasChildren,
-                                onCheckedChange = onHasChildrenChange,
-                                colors = CheckboxDefaults.colors(checkedColor = brandColor)
+                            Text(
+                                vLabel,
+                                color = if (active) brandTextColor else textColor,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp
                             )
-                            Spacer(Modifier.width(6.dp))
-                            Text("Z toho děti (do 150cm / 36kg)", color = textColor, fontWeight = FontWeight.ExtraBold, fontSize = 14.sp)
-                        }
-
-                        if (hasChildren) {
-                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    Text("PODSEDÁK", color = textColor.copy(alpha = 0.6f), fontSize = 11.sp, fontWeight = FontWeight.ExtraBold)
-                                    WaterGlassInput(
-                                        value = boosterSeatsStr,
-                                        onValueChange = { onBoosterSeatsChange(it.filter { c -> c.isDigit() }) },
-                                        placeholder = "0",
-                                        isDark = isDark,
-                                        brandColor = brandColor,
-                                        keyboardType = KeyboardType.Number
-                                    )
-                                }
-                                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    Text("AUTOSEDAČKA", color = textColor.copy(alpha = 0.6f), fontSize = 11.sp, fontWeight = FontWeight.ExtraBold)
-                                    WaterGlassInput(
-                                        value = childSeatsStr,
-                                        onValueChange = { onChildSeatsChange(it.filter { c -> c.isDigit() }) },
-                                        placeholder = "0",
-                                        isDark = isDark,
-                                        brandColor = brandColor,
-                                        keyboardType = KeyboardType.Number
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.fillMaxWidth().clickable { onEscortChange(!escort) }
-                    ) {
-                        Checkbox(
-                            checked = escort,
-                            onCheckedChange = onEscortChange,
-                            colors = CheckboxDefaults.colors(checkedColor = brandColor)
-                        )
-                        Spacer(Modifier.width(6.dp))
-                        Text("Odvoz vozu (Escort)", color = textColor, fontWeight = FontWeight.ExtraBold, fontSize = 14.sp)
-                    }
-
-                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text("VOZIDLA", color = textColor.copy(alpha = 0.6f), fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            listOf(
-                                "auto" to "Auto",
-                                "1" to "1 vůz",
-                                "2" to "2 vozy",
-                                "3" to "3 vozy"
-                            ).forEach { (vMode, vLabel) ->
-                                val active = vehiclesMode == vMode
-                                Box(
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .background(if (active) brandColor else Color.Transparent)
-                                        .border(1.dp, if (active) brandColor else borderColor, RoundedCornerShape(8.dp))
-                                        .clickable { onVehiclesModeChange(vMode) }
-                                        .padding(vertical = 10.dp),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text(
-                                        vLabel,
-                                        color = if (active) brandTextColor else textColor,
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 12.sp
-                                    )
-                                }
-                            }
                         }
                     }
                 }
+            }
+        }
 
-                if (isCalculating) {
-                    Box(modifier = Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
-                        Text("POČÍTÁM TRASU A CENU...", color = textColor.copy(alpha = 0.6f), fontWeight = FontWeight.ExtraBold)
-                    }
-                } else if (routeError != null) {
-                    Text(
-                        routeError,
-                        color = Color(0xFFFF4C4C),
-                        fontWeight = FontWeight.ExtraBold,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                } else if (pricingResult != null) {
-                    Divider(color = borderColor)
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column {
-                            Text("ODHADOVANÁ CENA", color = textColor.copy(alpha = 0.6f), fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
-                            Text("${pricingResult.totalKc} Kč", color = textColor, fontSize = 32.sp, fontWeight = FontWeight.Black)
-                        }
-                        Column(horizontalAlignment = Alignment.End) {
-                            Text("VZDÁLENOST", color = textColor.copy(alpha = 0.6f), fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
-                            val kmRounded = (kotlin.math.round(pricingResult.kmAB * 10.0) / 10.0)
-                            Text("$kmRounded km", color = textColor, fontSize = 20.sp, fontWeight = FontWeight.ExtraBold)
-                        }
-                    }
-
-                    Button(
-                        onClick = onProceedToReview,
-                        colors = ButtonDefaults.buttonColors(backgroundColor = brandColor),
-                        shape = RoundedCornerShape(16.dp),
-                        modifier = Modifier.fillMaxWidth().height(58.dp)
-                    ) {
-                        Text("🚕 Poptat jízdu", color = brandTextColor, fontWeight = FontWeight.Black, fontSize = 18.sp)
-                    }
+        // PRICE-WRAP PŘESNĚ PODLE CALC.JS (zobrazí se při výpočtu trasy a ceny)
+        if (isCalculating) {
+            Divider(color = borderColor)
+            Box(modifier = Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
+                Text("POČÍTÁM TRASU A CENU...", color = textColor.copy(alpha = 0.6f), fontWeight = FontWeight.ExtraBold)
+            }
+        } else if (routeError != null) {
+            Divider(color = borderColor)
+            Text(
+                routeError,
+                color = Color(0xFFFF4C4C),
+                fontWeight = FontWeight.ExtraBold,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)
+            )
+        } else if (pricingResult != null) {
+            Divider(color = borderColor)
+            Spacer(Modifier.height(4.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text("ODHADOVANÁ CENA", color = textColor.copy(alpha = 0.6f), fontSize = 13.sp, fontWeight = FontWeight.ExtraBold)
+                    Text("${pricingResult.totalKc} Kč", color = textColor, fontSize = 32.sp, fontWeight = FontWeight.Black)
                 }
+                Column(horizontalAlignment = Alignment.End) {
+                    Text("VZDÁLENOST", color = textColor.copy(alpha = 0.6f), fontSize = 13.sp, fontWeight = FontWeight.ExtraBold)
+                    val kmRounded = (kotlin.math.round(pricingResult.kmAB * 10.0) / 10.0)
+                    Text("$kmRounded km", color = textColor, fontSize = 20.sp, fontWeight = FontWeight.ExtraBold)
+                }
+            }
+
+            Spacer(Modifier.height(6.dp))
+            Button(
+                onClick = onProceedToReview,
+                colors = ButtonDefaults.buttonColors(backgroundColor = brandColor),
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier.fillMaxWidth().height(58.dp)
+            ) {
+                Text("🚕 Poptat jízdu", color = brandTextColor, fontWeight = FontWeight.Black, fontSize = 18.sp)
             }
         }
     }
@@ -1483,7 +1528,7 @@ fun NativeAddressField(
     point: GeoPoint?,
     onPointSelected: (GeoPoint?) -> Unit,
     onPickFromMap: () -> Unit,
-    onTypingStart: () -> Unit,
+    onFocusExpand: () -> Unit,
     brandColor: Color,
     textColor: Color,
     solidCardBg: Color,
@@ -1494,6 +1539,7 @@ fun NativeAddressField(
     var suggestions by remember { mutableStateOf<List<SuggestItem>>(emptyList()) }
     var isLocating by remember { mutableStateOf(false) }
 
+    // PŘESNĚ PODLE ADDRESSFIELD.JS: Žádná druhá ikonka vpravo, pouze křížek při vyplněném textu; roletka vyjede po klepnutí do prázdného pole
     Column(modifier = Modifier.fillMaxWidth()) {
         WaterGlassInput(
             value = if (isLocating) "Hledám vás..." else text,
@@ -1502,12 +1548,12 @@ fun NativeAddressField(
                 if (point != null) {
                     onPointSelected(null)
                 }
+                onFocusExpand()
                 if (newVal.trim().isEmpty()) {
                     suggestions = emptyList()
                     showActionMenu = true
                 } else {
                     showActionMenu = false
-                    onTypingStart()
                     TaxiApi.suggestAddresses(newVal) { items ->
                         suggestions = items
                     }
@@ -1517,9 +1563,17 @@ fun NativeAddressField(
             isDark = isDark,
             brandColor = brandColor,
             isHighlighted = point != null,
+            onFocusChange = { focused ->
+                if (focused) {
+                    onFocusExpand()
+                    if (text.trim().isEmpty() && point == null) {
+                        showActionMenu = true
+                    }
+                }
+            },
             leadingIcon = { Text(icon, fontSize = 16.sp) },
-            trailingIcon = {
-                if (text.isNotEmpty() || point != null) {
+            trailingIcon = if (text.isNotEmpty() || point != null || isLocating) {
+                {
                     Text(
                         "✕",
                         color = Color(0xFFE74C3C),
@@ -1527,24 +1581,17 @@ fun NativeAddressField(
                         fontSize = 18.sp,
                         modifier = Modifier
                             .clickable {
+                                isLocating = false
                                 text = ""
                                 suggestions = emptyList()
                                 onPointSelected(null)
+                                onFocusExpand()
                                 showActionMenu = true
                             }
-                            .padding(horizontal = 4.dp)
-                    )
-                } else {
-                    Text(
-                        if (showActionMenu) "▲" else "📍",
-                        color = brandColor,
-                        fontSize = 15.sp,
-                        modifier = Modifier
-                            .clickable { showActionMenu = !showActionMenu }
-                            .padding(horizontal = 4.dp)
+                            .padding(horizontal = 6.dp)
                     )
                 }
-            }
+            } else null
         )
 
         if (showActionMenu && text.isEmpty() && point == null) {
@@ -1573,11 +1620,11 @@ fun NativeAddressField(
                                 }
                             }
                         }
-                        .padding(14.dp),
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Text("📍", fontSize = 18.sp)
+                    Text("📍", fontSize = 20.sp)
                     Text("Moje poloha", color = textColor, fontWeight = FontWeight.ExtraBold, fontSize = 15.sp)
                 }
                 Divider(color = borderColor)
@@ -1588,11 +1635,11 @@ fun NativeAddressField(
                             showActionMenu = false
                             onPickFromMap()
                         }
-                        .padding(14.dp),
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Text("🗺️", fontSize = 18.sp)
+                    Text("🗺️", fontSize = 20.sp)
                     Text("Vybrat z mapy", color = textColor, fontWeight = FontWeight.ExtraBold, fontSize = 15.sp)
                 }
             }
@@ -1735,7 +1782,12 @@ fun OrderReviewView(
             verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             Text("DETAILY SPECIFIKACE", color = textColor.copy(alpha = 0.6f), fontSize = 11.sp, fontWeight = FontWeight.ExtraBold)
-            Text("👥 Osoby: ${draft.persons}", color = textColor, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+            Text(
+                "👥 Osoby: ${if (draft.persons > 0) draft.persons.toString() else "Automaticky"}",
+                color = textColor,
+                fontWeight = FontWeight.Bold,
+                fontSize = 13.sp
+            )
             if (draft.waitMinutes > 0) Text("⏱️ Čekání: ${draft.waitMinutes} min", color = textColor, fontWeight = FontWeight.Bold, fontSize = 13.sp)
             if (draft.escort) Text("🚗 Odvoz vozu (Escort)", color = textColor, fontWeight = FontWeight.Bold, fontSize = 13.sp)
             if (draft.boosterSeats > 0) Text("💺 Podsedák: ${draft.boosterSeats}x", color = textColor, fontWeight = FontWeight.Bold, fontSize = 13.sp)

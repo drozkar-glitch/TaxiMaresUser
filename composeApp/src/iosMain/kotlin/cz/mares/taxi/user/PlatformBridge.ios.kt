@@ -139,6 +139,10 @@ actual object PlatformBridge {
         return u
     }
 
+    actual fun clearCacheAndReload(onDone: () -> Unit) {
+        onDone()
+    }
+
     actual fun openExternalUrl(url: String) {
         val nsUrl = NSURL.URLWithString(url) ?: return
         UIApplication.sharedApplication.openURL(
@@ -208,7 +212,7 @@ actual fun InteractiveTaxiMap(
         Canvas(
             modifier = Modifier
                 .fillMaxSize()
-                .pointerInput(zoom) {
+                .pointerInput(zoom, isDark) {
                     val tilePx = 256.dp.toPx()
                     detectTransformGestures { _, pan, gestureZoom, _ ->
                         val cx = iosLonToX(centerLon, zoom) - (pan.x / tilePx)

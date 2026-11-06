@@ -23,6 +23,7 @@ expect object PlatformBridge {
     fun requestLocation(callback: (Double?, Double?) -> Unit)
     fun showSystemNotification(id: String, title: String, body: String, actionUrl: String)
     fun consumePendingNotificationUrl(): String?
+    fun clearCacheAndReload(onDone: () -> Unit)
     fun openExternalUrl(url: String)
     fun dialPhone(phone: String)
 }

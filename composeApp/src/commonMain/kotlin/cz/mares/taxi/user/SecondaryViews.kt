@@ -11,6 +11,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
@@ -35,6 +36,7 @@ fun WaterGlassInput(
     isHighlighted: Boolean = false,
     isPassword: Boolean = false,
     keyboardType: KeyboardType = KeyboardType.Text,
+    onFocusChange: ((Boolean) -> Unit)? = null,
     leadingIcon: (@Composable () -> Unit)? = null,
     trailingIcon: (@Composable () -> Unit)? = null
 ) {
@@ -59,9 +61,9 @@ fun WaterGlassInput(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(formBg, RoundedCornerShape(14.dp))
-                    .border(1.dp, formBorder, RoundedCornerShape(14.dp))
-                    .padding(horizontal = 14.dp, vertical = 14.dp),
+                    .background(formBg, RoundedCornerShape(16.dp))
+                    .border(1.dp, formBorder, RoundedCornerShape(16.dp))
+                    .padding(horizontal = 14.dp, vertical = 15.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 if (leadingIcon != null) {
@@ -85,7 +87,11 @@ fun WaterGlassInput(
                 }
             }
         },
-        modifier = modifier
+        modifier = if (onFocusChange != null) {
+            modifier.onFocusChanged { state -> onFocusChange(state.isFocused) }
+        } else {
+            modifier
+        }
     )
 }
 
@@ -1393,8 +1399,10 @@ fun AccountView(
 fun SettingsView(
     themeMode: String,
     onThemeChange: (String) -> Unit,
+    onForceUpdate: () -> Unit,
     onOpenLegalModal: (String, String) -> Unit,
     brandColor: Color,
+    brandTextColor: Color,
     textColor: Color,
     cardBg: Color,
     borderColor: Color
@@ -1403,8 +1411,8 @@ fun SettingsView(
         modifier = Modifier
             .fillMaxWidth()
             .verticalScroll(rememberScrollState())
-            .padding(bottom = 32.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+            .padding(top = 10.dp, bottom = 40.dp),
+        verticalArrangement = Arrangement.spacedBy(24.dp)
     ) {
         Column(
             modifier = Modifier
@@ -1413,29 +1421,59 @@ fun SettingsView(
                 .border(1.dp, borderColor, RoundedCornerShape(16.dp))
                 .padding(16.dp)
         ) {
-            Text("VZHLED APLIKACE", color = textColor.copy(alpha = 0.6f), fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
+            Text(
+                "VZHLED APLIKACE",
+                color = textColor.copy(alpha = 0.5f),
+                fontSize = 12.sp,
+                fontWeight = FontWeight.ExtraBold
+            )
             Spacer(Modifier.height(12.dp))
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf("auto" to "🤖 Auto", "light" to "☀️ Den", "dark" to "🌙 Noc").forEach { (mode, label) ->
                     val selected = themeMode == mode
-                    Button(
-                        onClick = { onThemeChange(mode) },
-                        colors = ButtonDefaults.buttonColors(
-                            backgroundColor = if (selected) brandColor else Color.Transparent
-                        ),
-                        border = BorderStroke(1.dp, if (selected) brandColor else borderColor),
-                        shape = RoundedCornerShape(10.dp),
-                        elevation = null,
-                        modifier = Modifier.weight(1f).height(44.dp)
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(if (selected) brandColor else cardBg)
+                            .border(1.dp, if (selected) brandColor else borderColor, RoundedCornerShape(10.dp))
+                            .clickable { onThemeChange(mode) }
+                            .padding(vertical = 11.dp),
+                        contentAlignment = Alignment.Center
                     ) {
                         Text(
                             label,
-                            color = if (selected) Color.Black else textColor,
-                            fontWeight = FontWeight.ExtraBold,
+                            color = if (selected) brandTextColor else textColor,
+                            fontWeight = FontWeight.Bold,
                             fontSize = 13.sp
                         )
                     }
                 }
+            }
+        }
+
+        // DLAŽDICE VYNUTIT AKTUALIZACI PŘESNĚ PODLE SETTINGS.JS
+        Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+            Column(
+                modifier = Modifier
+                    .size(width = 160.dp, height = 120.dp)
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(cardBg)
+                    .border(1.dp, borderColor, RoundedCornerShape(18.dp))
+                    .clickable { onForceUpdate() }
+                    .padding(12.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                Text("🔥", fontSize = 32.sp)
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Vynutit\naktualizaci",
+                    color = textColor,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    textAlign = TextAlign.Center
+                )
             }
         }
 
@@ -1446,7 +1484,12 @@ fun SettingsView(
                 .border(1.dp, borderColor, RoundedCornerShape(16.dp))
                 .padding(16.dp)
         ) {
-            Text("PRÁVNÍ INFORMACE", color = textColor.copy(alpha = 0.6f), fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
+            Text(
+                "PRÁVNÍ INFORMACE",
+                color = textColor.copy(alpha = 0.5f),
+                fontSize = 12.sp,
+                fontWeight = FontWeight.ExtraBold
+            )
             Spacer(Modifier.height(8.dp))
 
             val legalItems = listOf(
@@ -1471,10 +1514,10 @@ fun SettingsView(
                 }
             }
 
-            Spacer(Modifier.height(20.dp))
+            Spacer(Modifier.height(24.dp))
             Text(
                 "© 2026 Created by Pavel Mareš",
-                color = textColor.copy(alpha = 0.6f),
+                color = textColor.copy(alpha = 0.5f),
                 fontSize = 12.sp,
                 textAlign = TextAlign.Center,
                 modifier = Modifier.fillMaxWidth()
